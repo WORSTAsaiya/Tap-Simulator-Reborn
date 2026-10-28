@@ -12445,9 +12445,20 @@ local TradeAgent = (function()
                     return h
                 end
 
-                local function build(res, action)
+                -- Mythical and above only (Common..Legendary are ignored). A rarity the script does not know by name
+                -- (e.g. Eternal / Divine) counts as "above"; a pet whose rarity can't be read is skipped.
+                local function isMythicPlus(r)
+                    if r == nil or tostring(r) == "" or tostring(r) == "?" then return false end
+                    local rk = rarityRank(r)
+                    if rk == 0 then return true end
+                    return rk >= 6
+                end
+
+                local function build(res, action, rarestHatch, hatchTotal)
                     local grouped = {}
-                    for i, g in ipairs(res.grouped or {}) do grouped[i] = g end
+                    for _, g in ipairs(res.grouped or {}) do
+                        if isMythicPlus(g.rarity) then grouped[#grouped + 1] = g end
+                    end
                     table.sort(grouped, function(a, b)
                         local ra, rb = rarityRank(a.rarity), rarityRank(b.rarity)
                         if ra ~= rb then return ra > rb end
@@ -12469,12 +12480,19 @@ local TradeAgent = (function()
                         lines[i] = rows[i] .. string.rep(" ", wName - #rows[i]) .. "  " .. string.format("%-6s", "x" .. tostring(g.count))
                             .. " " .. string.format("%-10s", tostring(g.rarity or "?")) .. " " .. tostring(g.tier)
                     end
-                    local desc = #lines > 0 and ("```\n" .. table.concat(lines, "\n") .. "\n```") or "No pets found."
+                    local desc = #lines > 0 and ("```\n" .. table.concat(lines, "\n") .. "\n```") or "No Mythical or above pets."
                     if #grouped > shown then desc = desc .. "\n+" .. (#grouped - shown) .. " more pet types" end
 
                     local owned = tonumber(res.owned) or 0
                     local eq = tonumber(res.equippedCount) or 0
                     local plrs = #Players:GetPlayers() .. "/" .. tostring(Players.MaxPlayers)
+                    local hatchTxt = hatchTotal and num(hatchTotal) or "?"
+                    local rarestTxt = "None yet"
+                    if rarestHatch then
+                        rarestTxt = (rarestHatch.rarity and (tostring(rarestHatch.rarity) .. " ") or "") .. tostring(rarestHatch.name)
+                            .. (rarestHatch.tier and rarestHatch.tier ~= "Normal" and (" (" .. tostring(rarestHatch.tier) .. ")") or "")
+                            .. " · <t:" .. tostring(rarestHatch.at) .. ":R>"
+                    end
                     local uname = (WebhookState and WebhookState.blur) and ("||" .. lp.Name .. "||") or lp.Name
                     return {
                         title = "Pet inventory report",
@@ -12483,11 +12501,12 @@ local TradeAgent = (function()
                         fields = {
                             { name = "Username", value = uname, inline = true },
                             { name = "Server players", value = plrs, inline = true },
-                            { name = "\u{200B}", value = "\u{200B}", inline = true },
+                            { name = "Hatches", value = hatchTxt, inline = true },
                             { name = "Equipped", value = tostring(eq) .. (res.equippedMax and ("/" .. tostring(res.equippedMax)) or ""), inline = true },
                             { name = "Unequipped", value = num(math.max(owned - eq, 0)), inline = true },
                             { name = "Total", value = num(owned) .. (res.capacity and (" / " .. num(res.capacity)) or ""), inline = true },
                             { name = "Last action", value = action.text .. " · <t:" .. tostring(action.at) .. ":R>", inline = false },
+                            { name = "Rarest Hatch", value = rarestTxt, inline = false },
                         },
                         footer = { text = "Updated" },
                         timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
@@ -12498,6 +12517,7 @@ local TradeAgent = (function()
                     task.wait(5 + math.random() * 10)   -- spreads 15 accounts out so they do not all talk to Discord at once
                     msgId = loadId()
                     local prevIdx, latest, lastCount, lastHatches
+                    local rarestHatch, hatchTotal = nil, nil   -- rarest pet hatched since the script started
                     local baseCount, stable = -1, 0
                     local lastForce, lastSent, lastSig, lastTrade = 0, -1e9, nil, -1e9
                     local gap, pending = INV_GAP, false
@@ -12515,6 +12535,7 @@ local TradeAgent = (function()
                             local hOk, hat = pcall(readHatches)
                             if not hOk then hat = nil end
 
+                            if hat ~= nil then hatchTotal = hat end
                             local changed = (prevIdx == nil) or cnt ~= lastCount or (hat ~= nil and hat ~= lastHatches) or (now - lastForce >= INV_FORCE)
                             if changed then
                                 local res, idx = DATA.read()
@@ -12548,6 +12569,19 @@ local TradeAgent = (function()
                                                 text = "Deleted " .. lost .. " pet" .. (lost == 1 and "" or "s")
                                             end
                                             action = { text = text, at = os.time() }
+                                            if hatched and not recentTrade then   -- remember the rarest pet of this hatch
+                                                for id, p in pairs(idx) do
+                                                    if not prevIdx[id] then
+                                                        local rk, vk = rarityRank(p.rarity), VRANK[p.tier] or 0
+                                                        local best = rarestHatch
+                                                        local bk, bv = best and rarityRank(best.rarity) or -1, best and (VRANK[best.tier] or 0) or -1
+                                                        if rk > bk or (rk == bk and vk > bv) then
+                                                            rarestHatch = { name = p.name, tier = p.tier, rarity = p.rarity, at = os.time() }
+                                                        end
+                                                    end
+                                                end
+                                                pending = true
+                                            end
                                         end
                                         prevIdx, latest, lastCount, lastHatches = idx, res, cnt, hat
                                         local sig = fingerprint(res)
@@ -12558,7 +12592,7 @@ local TradeAgent = (function()
 
                             if latest and now - lastSent >= INV_REFRESH then pending = true end
                             if pending and latest and now - lastSent >= gap then
-                                if push(build(latest, action)) then
+                                if push(build(latest, action, rarestHatch, hatchTotal)) then
                                     lastSent, pending = now, false
                                     gap = INV_GAP + math.random() * 3
                                 else
