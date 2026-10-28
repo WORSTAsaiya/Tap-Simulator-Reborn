@@ -14,9 +14,9 @@
 --// 9. Trade list scanning (selectPets / scrollList): waits for the list to finish building its cards after every scroll,
 --//    scrolls half a window at a time, waits at the "bottom" before giving up, and scans the whole list a second time
 --//    before reporting "found only X of Y" (fix for Diamond cards not being found).
---// 10.
---// 11.
---// 12.
+--// 10. Added Golden/Diamond pet-per-craft selectors using the existing MachineService requests.
+--// 11. Kaitun Enchant now assigns distinct pets to Four-Leaf x2, Secret Hunter x2, and Lucky III for extras.
+--// 12. Kaitun Enchant prioritizes Luck/Gems affinity, Legendary+ rarity and preserves a matching slot.
 --// =====================================================================================================
 --// WORST Hub - Auto Hatch (Hatch tab) + Auto Craft (Pets tab)
 --// Execute as a normal script. Executing again closes the previous instance first.
@@ -1234,8 +1234,8 @@ local function buildLogic()
 
 	-------------------------------------------------------------------------- settings: craft
 	local MACHINE       = "Golden"
-	local NEED          = 6          -- pets per Golden craft
-	local TRIGGER_AT    = 6          -- go to the machine when you own at least this many of the selected pet
+	local NEED          = 6          -- pets per Golden craft (adjustable)
+	local TRIGGER_AT    = NEED       -- minimum matching pets needed to craft; storageGate alone controls when auto-crafting starts
 	local SCAN_EVERY    = 30        -- a scan result younger than this is reused: a feature that needs fresh pets (Craft ...) scans at most this often
 	local IDLE_SCAN     = 180       -- the background "Auto Scan Inventory" toggle only rescans every X seconds (3 minutes) - it walks every pet you own
 
@@ -1371,13 +1371,27 @@ local function buildLogic()
 	local craftEntry = {
 		-- TOGGLE "Auto Craft": Turns every 6 of the chosen pet (or of every pet with 6+) into Golden.
 		type = "toggle", name = "Auto Craft", icon = "✨", default = false,
-		desc = "Turns every 6 of the chosen pet (or of every pet with 6+) into Golden. Pauses auto hatch while crafting.",
+		desc = "Crafts when the storage slider threshold is reached; Golden Amount controls pets used per craft. Pauses auto hatch while crafting.",
 	}
 	local storageEntry = {
 		type = "slider", name = "Craft When Storage Is", icon = "📦",
 		desc = "Golden crafts only start once your pet storage is this full (0% = always craft). Diamond/Rainbow ignore this.",
 		min = 0, max = 100, default = 0, step = 5, suffix = "%",
 	}
+	local goldenAmountEntry = {
+		type = "dropdown", name = "Golden Amount", icon = "✨", width = 280,
+		desc = "Number of matching Normal pets consumed per Golden craft. Crafting starts based on the Craft When Storage Is slider, not this amount.",
+		options = { "2 pets", "3 pets", "4 pets", "5 pets", "6 pets" }, default = "6 pets",
+	}
+	goldenAmountEntry.callback = function(value)
+		local n = tonumber(tostring(value):match("^(%d+)"))
+		if n and n >= 2 and n <= 6 then
+			NEED = n
+			TRIGGER_AT = NEED -- matching pets required for a valid craft, NOT the storage trigger
+			lastScanAt = -1e9
+			if lastGroups and fillOptions then fillOptions(lastGroups) end
+		end
+	end
 	local craftAllEntry = {
 		type = "button", name = "Craft All", icon = "⚡", noSave = true,
 		desc = "Asks the Golden Machine to craft everything it can in one go (same as the game's own Craft All button). Turn Auto Craft off first.",
@@ -2229,6 +2243,18 @@ local function buildLogic()
 			if isNear(cf, 30) then return true end
 		end
 		warn("[Travel] could not get to the machine spot after 3 tries")
+		return isNear(cf, 30)
+	end
+
+	-- Direct machine teleport for crafting jobs only; island travel is unnecessary.
+	local function directCraftTeleport(stillActive, cf, statusFn)
+		for attempt = 1, 3 do
+			if not stillActive() then return false end
+			statusFn(attempt == 1 and "Teleporting directly to crafting machine..." or ("Retrying machine teleport (" .. attempt .. "/3)..."))
+			teleportTo(cf)
+			sleepFor(stillActive, 0.5)
+			if isNear(cf, 30) then return true end
+		end
 		return isNear(cf, 30)
 	end
 
@@ -3448,7 +3474,7 @@ local function buildLogic()
 		if next(craftWant) ~= nil then
 			for key, n in pairs(craftWant) do
 				local g = groups[key]
-				if g and n > 0 and g.count >= TRIGGER_AT then
+				if g and isBaseTier(g.rawTier) and n > 0 and g.count >= TRIGGER_AT then
 					local text = string.format("%s (%s)", g.name, g.tier)
 					list[#list + 1] = { key = key, text = text, count = g.count, want = n }
 				end
@@ -3498,8 +3524,10 @@ local function buildLogic()
 		end
 		if not active(id) then return "stopped" end
 
-		setStatus("Traveling to " .. CRAFT_ISLAND .. "...")
-		HG.travelAndTeleport(function() return active(id) end, CRAFT_ISLAND, CRAFT_CF, setStatus, SKIP_TRAVEL_RADIUS)
+		setStatus("Teleporting directly to Golden machine...")
+		if not directCraftTeleport(function() return active(id) end, CRAFT_CF, setStatus) then
+			return active(id) and "fail" or "stopped"
+		end
 		if not active(id) then return "stopped" end
 
 		local groups = lastGroups
@@ -3510,7 +3538,7 @@ local function buildLogic()
 		for _, t in ipairs(targets) do
 			if t.count > CRAFT_ALL_OVER and t.want == nil then big = true break end
 		end
-		if big and MAX_CRAFTS == 0 then
+		if big and MAX_CRAFTS == 0 and NEED == 6 then
 			setStatus("Craft All...")
 			local res = goldenRequest(id, { Machine = MACHINE, Action = "CraftAll" }, RESULT_WAIT)
 			if not active(id) then return "stopped" end
@@ -3674,7 +3702,7 @@ local function buildLogic()
 
 		local keys = {}
 		for k, g in pairs(groups) do
-			if g.count >= NEED or craftWant[k] then keys[#keys + 1] = k end
+			if isBaseTier(g.rawTier) and (g.count >= NEED or craftWant[k]) then keys[#keys + 1] = k end
 		end
 		table.sort(keys, function(a, b)
 			local ca, cb = groups[a].count, groups[b].count
@@ -3692,7 +3720,7 @@ local function buildLogic()
 			labelOf[key] = text
 		end
 		for key, n in pairs(craftWant) do   -- a picked pet that is gone from the inventory stays visible (limit 0) so it can be removed
-			if not labelOf[key] then
+			if not labelOf[key] and (not groups[key] or isBaseTier(groups[key].rawTier)) then
 				local text = tostring(key):gsub("|", " (") .. ")"
 				opts[#opts + 1] = text
 				optionInfo[text] = { key = key, text = text }
@@ -3703,11 +3731,11 @@ local function buildLogic()
 
 		local counts = dropEntry.counts
 		for k in pairs(counts) do counts[k] = nil end
-		for key, n in pairs(craftWant) do counts[labelOf[key]] = n end
+		for key, n in pairs(craftWant) do if labelOf[key] then counts[labelOf[key]] = n end end
 
 		local craftable = 0
 		for _, g in pairs(groups) do
-			if g.count >= NEED then craftable = craftable + 1 end
+			if isBaseTier(g.rawTier) and g.count >= NEED then craftable = craftable + 1 end
 		end
 
 		dropEntry.emptyText = selAll and ALL_OPT or "Select a pet..."
@@ -3887,10 +3915,10 @@ local function buildLogic()
 				end
 				if not stillActive() then return "stopped" end
 
-				statusFn("Traveling to " .. island .. "...")
-				local arrived = HG.travelAndTeleport(stillActive, island, cf, statusFn, SKIP_TRAVEL_RADIUS)
+				statusFn("Teleporting directly to " .. island .. " crafting machine...")
+				local arrived = directCraftTeleport(stillActive, cf, statusFn)
 				if not stillActive() then return "stopped" end
-				if not arrived then statusFn("[Debug] Couldn't reach the machine spot on " .. island .. " (travel / teleport failed) - trying anyway...") end
+				if not arrived then return "fail" end
 				return body() or "ok"
 			end)
 			releaseTrip(name)
@@ -4183,6 +4211,9 @@ local function buildLogic()
 		local diamondJob = newJob({
 			name = "Craft to Diamond", icon = "💎", label = "Diamond", fromLabel = "Golden",
 			dropName = "Diamond Pet", fromTier = "gold", need = 5,
+			amountName = "Diamond Amount",
+			amountDesc = "How many Golden pets of the same kind to use per Diamond craft (machine must accept the amount).",
+			amounts = { {label="2 pets",pets=2}, {label="3 pets",pets=3}, {label="4 pets",pets=4}, {label="5 pets",pets=5} },
 			machine = "Diamond", action = "Craft", island = ISLAND_DIAMOND, cf = CF_DIAMOND,
 			desc = "Turns 5 Golden pets of the same kind into a Diamond pet (Crystal Cave). Pauses auto hatch while crafting.",
 			dropDesc = "Which Golden pet to turn into Diamond (updates after every scan).",
@@ -4292,7 +4323,7 @@ local function buildLogic()
 		bindToggle(collectJob, collectLoop)
 
 		return {
-			dDrop = diamondJob.drop, dCraft = diamondJob.entry,
+			dDrop = diamondJob.drop, dAmount = diamondJob.amountEntry, dCraft = diamondJob.entry,
 			rDrop = rainbowJob.drop, rCraft = rainbowJob.entry, rAmount = rainbowJob.amountEntry,
 			collect = collectJob.entry,
 			dJob = diamondJob, rJob = rainbowJob,
@@ -6223,7 +6254,7 @@ local function buildLogic()
 		local enchantEntry = {
 			-- TOGGLE "Kaitun Enchant": needs Kaitun Hatch; while hatching it enchants your equipped pets with the wanted enchants (Secret Hunter, Four Leaf, Lucky 3).
 			type = "toggle", name = "Kaitun Enchant", icon = "🔮", default = false,
-			desc = "Needs Kaitun Hatch. While you are hatching it enchants the pets you have equipped with Secret Hunter, Four Leaf and Lucky 3 (both slots), then the pets Richest would equip with Renewal 3. Runs on its own: no other toggle is touched.",
+			desc = "Needs Kaitun Hatch. Luck-affinity Legendary+ equipped pets: two Four-Leaf, two Secret Hunter, and Lucky III on extras (one matching slot per pet). Rebirth pets prioritize Gems affinity and Renewal III.",
 		}
 		local turnedOn = {}   -- entries Kaitun switched on (only those are switched off again)
 		local kaitunOn = false
@@ -6328,7 +6359,7 @@ local function buildLogic()
 					j.finished = false
 					if j.drop and j.drop.counts then for k in pairs(j.drop.counts) do j.drop.counts[k] = nil end end
 					if j.drop and j.drop._refreshMulti then j.drop._refreshMulti(true) end
-					if j.amountEntry then   -- Rainbow Amount: Kaitun always uses 2 pets
+					if j == pet.rJob and j.amountEntry then   -- Rainbow Amount: Kaitun always uses 2 pets
 						if not j.needBefore then j.needBefore = j.need end
 						j.need = 2
 						if j.amountEntry._refresh then j.amountEntry._refresh(j.amountOptions[1]) end
@@ -9419,7 +9450,7 @@ local function buildLogic()
 		islands = islandTools,
 		priority = HG, kaitun = HG.kaitun,
 		egg = eggEntry, hatch = hatchEntry, scan = scanEntry, storage = storageEntry, drop = dropEntry, craft = craftEntry, craftAll = craftAllEntry,
-		dDrop = pet.dDrop, dCraft = pet.dCraft, rDrop = pet.rDrop, rAmount = pet.rAmount, rCraft = pet.rCraft, collect = pet.collect,
+		dDrop = pet.dDrop, dAmount = pet.dAmount, dCraft = pet.dCraft, goldenAmount = goldenAmountEntry, rDrop = pet.rDrop, rAmount = pet.rAmount, rCraft = pet.rCraft, collect = pet.collect,
 		enchant = ench, autodel = autodel,
 		hatchCount = function()   -- total hatches the game shows (nil if unreadable), hatches counted by this script since it started
 			local ok, v = pcall(HA.readHatches)
@@ -13640,8 +13671,8 @@ local TAB_SCRIPTS = {
 			name = "Crafting",
 			entries = {
 				Logic.storage,
-				Logic.drop, Logic.craft, Logic.craftAll,
-				Logic.dDrop, Logic.dCraft,
+				Logic.drop, Logic.goldenAmount, Logic.craft, Logic.craftAll,
+				Logic.dDrop, Logic.dAmount, Logic.dCraft,
 				Logic.rDrop, Logic.rAmount, Logic.rCraft,
 				Logic.collect,
 			},
@@ -14208,6 +14239,7 @@ do
 			local LUCK_NAMES = { "Secret Hunter", "Four Leaf", "Lucky 3" }
 			local RICH_NAMES = { "Renewal 3" }
 			local REPLACE_PROTECTED = true   -- true = a pet holding some other (Rare / III) enchant gets rerolled too; false = such slots are skipped
+			local MAX_ROLLS_PER_TURN = 700 -- defer this pet/slot until other candidates have been tried
 			local MAX_FAILS   = 5            -- refused / odd results in a row before a 60 s pause
 			local CLAIM_WAIT  = 8            -- seconds to keep trying to take a pet back out of the enchanter
 			local RICH_EVERY  = 600          -- seconds between two looks at the Richest pets
@@ -14220,7 +14252,7 @@ do
 			local used, usedAt = {}, os.clock()
 			local rich = { ids = nil, at = -1e9 }
 			local fails = 0
-			local stick = nil                 -- pet we are working on: stays in the "equipped" list until both of its slots are done
+			local stick = nil                 -- pet we are working on: remains eligible after it is temporarily unequipped
 
 			-- Sets the status text of Kaitun Enchant.
 			local function status(text) local l = enchEntry._desc if l and l.Parent then l.Text = text end end
@@ -14342,8 +14374,11 @@ do
 					end
 				end
 				for _, want in ipairs(names) do
-					local hit = any and byNorm[norm(want)] or (not any and want) or nil
-					if hit then out.list[#out.list + 1] = hit out.set[hit] = true else out.missing[#out.missing + 1] = want end
+					local hit = any and (byNorm[norm(want)] or ((norm(want) == "secrethunter" or norm(want) == "secretluck") and (byNorm.secrethunter or byNorm.secretluck))) or (not any and want) or nil
+					if hit then
+					if not out.set[hit] then out.list[#out.list + 1] = hit end
+					out.set[hit] = true
+				else out.missing[#out.missing + 1] = want end
 				end
 				return out
 			end
@@ -14416,20 +14451,116 @@ do
 			end
 
 			------------------------------------------------ next (pet, slot) that still needs an enchant
-			local function pick(owned, idSet, wanted, protect)
-				local ids = {}
-				for pid, p in pairs(owned) do
-					if idSet[tostring(pid)] and type(p) == "table" and type(p.Name) == "string" then ids[#ids + 1] = pid end
+			local RARITY_RANK = { Legendary=1, Mythical=2, Godly=3, Secret=4, Eternal=5, Divine=6 }
+			local function eligible(p)
+				return type(p) == "table" and type(p.Name) == "string" and
+					(RARITY_RANK[tostring(p.Rarity)] or 0) >= 1
+			end
+			local function hasTarget(p, wanted)
+				return wanted.set[slotValue(p, 1)] or wanted.set[slotValue(p, 2)]
+			end
+			local function rollSlot(pid, p, protected)
+				local bestSlot, bestScore
+				for slot = 1, slotCount(p) do
+					local cur = slotValue(p, slot)
+					if not used[tostring(pid) .. ":" .. slot] then
+						local score = (cur == nil and 0 or 1)
+						if type(cur) == "string" and protected and protected.set[cur] then score = score + 100 end
+						if bestScore == nil or score < bestScore then bestSlot, bestScore = slot, score end
+					end
 				end
-				table.sort(ids, function(a, b) return tostring(a) < tostring(b) end)
-				for _, pid in ipairs(ids) do
-					local p = owned[pid]
-					for slot = 1, slotCount(p) do
-						local cur = slotValue(p, slot)
-						local has = type(cur) == "string"
-						if not used[tostring(pid) .. ":" .. slot] and not (has and wanted.set[cur]) and not (has and protect and protect.set[cur]) then
-							return pid, p, slot
+				if bestScore and bestScore < 100 then return bestSlot end
+			end
+			-- Every equipped Luck pet needs a valid TWO-slot combination.
+			-- Roles: 2 Secret Hunter + (Four Leaf/Lucky 3), 2 Four Leaf +
+			-- (Secret Hunter/Lucky 3), remaining Lucky 3 + any of the three.
+			-- Existing valid combinations are assigned first; neither slot has a fixed order.
+			local function pickLuck(owned, idSet, targets)
+				local ids = {}
+				for pid,p in pairs(owned) do
+					if idSet[tostring(pid)] and eligible(p) then ids[#ids+1] = pid end
+				end
+				table.sort(ids, function(a,b)
+					local pa,pb = owned[a],owned[b]
+					if (pa.Affinity == "Luck") ~= (pb.Affinity == "Luck") then return pa.Affinity == "Luck" end
+					return tostring(a) < tostring(b)
+				end)
+				local secret, leaf, lucky = targets[1], targets[2], targets[3]
+				local function kind(v)
+					if secret.set[v] then return 1 end
+					if leaf.set[v] then return 2 end
+					if lucky.set[v] then return 3 end
+					return 0
+				end
+				local function valid(role, x, y)
+					if role == 1 then return (x == 1 and (y == 2 or y == 3)) or (y == 1 and (x == 2 or x == 3)) end
+					if role == 2 then return (x == 2 and (y == 1 or y == 3)) or (y == 2 and (x == 1 or x == 3)) end
+					return (x == 3 and y >= 1) or (y == 3 and x >= 1)
+				end
+				local function cost(p, role)
+					local x,y = kind(slotValue(p,1)),kind(slotValue(p,2))
+					if valid(role,x,y) then return 0 end
+					for replacement=1,3 do
+						if valid(role,replacement,y) or valid(role,x,replacement) then return 1 end
+					end
+					return 2
+				end
+				local roles = {}
+				for i=1,#ids do roles[i] = i <= 2 and 1 or (i <= 4 and 2 or 3) end
+				local assigned, taken = {}, {}
+				-- Assign scarce two-pet roles first, minimizing the number of rerolls.
+				for i,role in ipairs(roles) do
+					local best, bestCost
+					for _,pid in ipairs(ids) do
+						if not taken[tostring(pid)] then
+							local c = cost(owned[pid],role)
+							if not best or c < bestCost then best,bestCost = pid,c end
 						end
+					end
+					if best then assigned[i] = best; taken[tostring(best)] = true end
+				end
+				for i,pid in ipairs(assigned) do
+					local p,role = owned[pid],roles[i]
+					local x,y = kind(slotValue(p,1)),kind(slotValue(p,2))
+					if not valid(role,x,y) then
+						local bestSlot,bestTarget,bestScore
+						for slot=1,math.min(2,slotCount(p)) do
+							if not used[tostring(pid)..":"..slot] then
+								local current = slot == 1 and x or y
+								for targetKind=1,3 do
+									local nx,ny = slot == 1 and targetKind or x, slot == 2 and targetKind or y
+									local completes = valid(role,nx,ny)
+									local primary = role
+									local useful = completes or (targetKind == primary and current ~= primary)
+									if useful and current ~= targetKind then
+										local score = (completes and 0 or 10) + (current == 0 and 0 or 1)
+										if not bestScore or score < bestScore then
+											bestSlot,bestTarget,bestScore = slot,targets[targetKind],score
+										end
+									end
+								end
+							end
+						end
+						if bestSlot then return pid,p,bestSlot,bestTarget end
+					end
+				end
+			end
+			local function pickRich(owned, idSet, wanted, protect)
+				local ids = {}
+				for pid,p in pairs(owned) do
+					if idSet[tostring(pid)] and eligible(p) then ids[#ids+1]=pid end
+				end
+				table.sort(ids,function(a,b)
+					local aa=owned[a].Affinity == "Gems" and 1 or 0
+					local ab=owned[b].Affinity == "Gems" and 1 or 0
+					if aa ~= ab then return aa > ab end
+					return tostring(a)<tostring(b)
+				end)
+				for _,pid in ipairs(ids) do
+					local p=owned[pid]
+					if not hasTarget(p,wanted) then
+						local slot=rollSlot(pid,p,protect)
+						if slot then return pid,p,slot end
 					end
 				end
 			end
@@ -14478,8 +14609,19 @@ do
 
 				-- the roll runs on the server: wait for the game's own Stop event
 				local t0 = os.clock()
+				local deferred = false
 				while act(my) do
 					if stopEvt then break end
+					if rollCount >= MAX_ROLLS_PER_TURN then
+						-- Stop the server-side roll, reclaim this pet, and try another candidate.
+						deferred = true
+						status(string.format("%s reached %d rolls - moving to next pet", label, rollCount))
+						call("AutoStop")
+						local stopWait = os.clock()
+						while act(my) and rolling() and os.clock() - stopWait < 5 do task.wait(0.2) end
+						nap(my, 0.5)
+						break
+					end
 					if os.clock() - t0 > 4 and not rolling() then nap(my, 1) break end   -- the Stop event can arrive a moment after the attribute clears
 					status(string.format("%s | rolling %s | %d roll(s) | enchanted %d", phaseName, label, rollCount, done))
 					task.wait(0.25)
@@ -14509,8 +14651,11 @@ do
 					if type(v) == "string" and wanted.set[v] then got = true break end
 					task.wait(0.25)
 				end
-				used[key] = true   -- never roll the same slot twice in one pass (the pass restarts every 2 minutes)
-				if got or reason == "Matched" then
+				used[key] = true   -- deferred slots are revisited after the other candidates have had their turn
+				if deferred and not got and reason ~= "Matched" then
+					fails = 0 -- reaching the roll budget is intentional, not a server failure
+					status(string.format("Deferred %s after %d rolls - trying other pets", label, rollCount))
+				elseif got or reason == "Matched" then
 					done, fails = done + 1, 0
 				elseif reason == "Gems" then
 					status("Out of gems - waiting 30 s...") nap(my, 30)
@@ -14522,7 +14667,7 @@ do
 			end
 
 			------------------------------------------------ one pass of the loop
-			local luck, richW
+			local luck, richW, luckTargets
 			-- One enchant step.
 			local function step(my)
 				if os.clock() - usedAt > 120 then used, usedAt = {}, os.clock() end   -- slots that failed earlier get another try
@@ -14532,6 +14677,7 @@ do
 				end
 				if not luck or #luck.list == 0 then
 					luck, richW = resolve(LUCK_NAMES), resolve(RICH_NAMES)
+					luckTargets = { resolve({"Secret Hunter", "Secret Luck"}), resolve({"Four Leaf"}), resolve({"Lucky 3"}) }
 					if #luck.list == 0 then status("Couldn't find the enchants " .. table.concat(LUCK_NAMES, " / ") .. " in this game - retrying...") luck = nil nap(my, 10) return end
 				end
 				if not gate(my) then return end
@@ -14545,15 +14691,22 @@ do
 				-- 1) the pets you have equipped right now
 				local eqs = equippedSet(data)
 				if stick then eqs[stick] = true end
-				local pid, p, slot = pick(owned, eqs, luck, nil)
-				if pid then return roll(my, "Luckiest pets", luck, pid, p, slot) end
+				local pid, p, slot, target = pickLuck(owned, eqs, luckTargets)
+				if pid then return roll(my, "Luckiest pets", target, pid, p, slot) end
 
 				-- 2) done: the pets Richest would equip before the rebirth -> Renewal 3 (never over the luck enchants)
 				if K.skip.rebirth then status("Equipped pets are enchanted | Auto Rebirth + Equip is off, so there are no Richest pets to look for") nap(my, RECHECK) return end
 				if #richW.list == 0 then status("Equipped pets are enchanted | Renewal 3 doesn't exist in this game") nap(my, RECHECK) return end
 				if not refreshRich(my) then nap(my, 5) return end
-				pid, p, slot = pick(owned, rich.ids, richW, luck)
+				pid, p, slot = pickRich(owned, rich.ids, richW, luck)
 				if pid then return roll(my, "Richest pets", richW, pid, p, slot) end
+				if next(used) then
+					-- One full pass is complete; retry the deferred pets in a fresh pass.
+					used, usedAt = {}, os.clock()
+					status("Finished other pets - revisiting deferred enchants...")
+					nap(my, 1)
+					return
+				end
 				status(string.format("All done | equipped pets have the luck enchants, Richest pets have Renewal 3 | enchanted %d | checking again in %d s", done, RECHECK))
 				nap(my, RECHECK)
 			end
@@ -17399,7 +17552,7 @@ do
 		local enchTitle = label(card, "What Kaitun Enchant does", 533, 496, 24, C.text, Enum.Font.GothamMedium, Enum.TextXAlignment.Center)
 		label(card, "Needs Kaitun Hatch. Only works while you are hatching, and runs on its own.", 533, 524, 16, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
 		label(card, "1.)  Your equipped pets", 533, 566, 19, C.text, Enum.Font.GothamMedium, Enum.TextXAlignment.Center)
-		label(card, "Secret Hunter, Four Leaf and Lucky 3 in both slots.", 533, 592, 16, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
+		label(card, "Two Four-Leaf, two Secret Hunter, remaining Lucky III; one matching slot per pet.", 533, 592, 16, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
 		label(card, "2.)  The pets Richest equips before a rebirth", 533, 634, 19, C.text, Enum.Font.GothamMedium, Enum.TextXAlignment.Center)
 		label(card, "Renewal 3, once your equipped pets have their enchants.", 533, 660, 16, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
 		label(card, "If Kaitun Hatch is off, a pop up asks you to run it first and the toggle switches itself off again.", 533, 698, 14, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
