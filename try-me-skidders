@@ -10525,8 +10525,8 @@ local TradeAgent = (function()
         --     The window is only used by the old fallbacks below (UI_FALLBACK / the trade-time unlock when no lock field exists).
         local WORKER_URL = "https://tsr-hub.asaiyamain.workers.dev"
         local AGENT_KEY  = "worst"   -- must match the AGENT_KEY variable in Cloudflare
-        local EVERY      = 30        -- seconds between heartbeats (a trade starts at the next heartbeat)
-        local EVERY_FAST = 5         -- the site asks for this while a multi trade is running
+        local EVERY      = 60        -- seconds between heartbeats (a trade starts at the next heartbeat). Was 30: doubled to save Cloudflare requests
+        local EVERY_FAST = 10        -- the site asks for this while a multi trade is running (was 5: raise it back if Multi Trade feels too slow)
         local RESCAN     = 120       -- seconds between pet scans (opens the Inventory briefly)
         local DEBUG      = true      -- print every trade step (card counts, picks, scrolling)
         local OPEN_DELAY = 2         -- seconds to wait after the trade window opens, before choosing pets
@@ -11315,7 +11315,7 @@ local TradeAgent = (function()
         -- =====================================================================================
         local lastTrade = nil        -- { id, stage, ok, msg, at } reported to the site in every heartbeat
         local abortRequested = false -- set by an "abort" command from the site (multi trade: the partner failed / job cancelled)
-        local everyNow = EVERY       -- 30 s normally, 5 s while the site runs a multi trade
+        local everyNow = EVERY       -- 60 s normally, 10 s while the site runs a multi trade
 
         -- Stores the result of a trade step so it can be reported.
         local function setTrade(id, stage, ok, msg)
@@ -12322,6 +12322,255 @@ local TradeAgent = (function()
                 task.wait(everyNow)
             end
         end)
+
+        -- ============================================================ INVENTORY WEBHOOK (Discord, edits itself)
+        -- One Discord message PER ACCOUNT. It is posted once, then EDITED in place whenever the inventory changes
+        -- (hatched / crafted / deleted / traded). It never touches Cloudflare, so it keeps working when the site is rate limited.
+        -- The message id is saved in WORST/inv_msg_<userid>.txt, so rejoining edits the same message instead of posting a new one.
+        do
+            local INV_ON      = true    -- false = switch the whole inventory webhook off
+            local INV_WEBHOOK = "https://discord.com/api/webhooks/1565121533310013632/wjqwlDIJGdASkuwQvSSDx-UL35U7BIpkHQuFxdvUKJjhcPNYBXBhfqFfYVuzqkC1KYlf"   -- <- put your real webhook link here
+            local INV_LOOK    = 2       -- seconds between cheap looks (pet count + eggs-opened). Discord is only contacted when something changed.
+            local INV_GAP     = 15      -- an account edits its message at most once per this many seconds (15 accounts = about 1 request per second)
+            local INV_FORCE   = 30      -- seconds between full re-reads even if the count did not move (catches equip / unequip)
+            local INV_REFRESH = 300     -- edit anyway every 5 minutes so "Server players" and the time stay fresh
+            local INV_ROWS    = 15      -- how many pet rows to list (rarest first)
+            local INV_COLOR   = 5793266 -- embed color (decimal)
+            local INV_NAME    = "WORST • Inventory"
+
+            local base = (tostring(INV_WEBHOOK):gsub("%?.*$", ""):gsub("/+$", ""))
+            local urlOk = base:find("discord.com/api/webhooks/", 1, true) ~= nil or base:find("discordapp.com/api/webhooks/", 1, true) ~= nil
+            if not INV_ON or not urlOk then
+                if INV_ON then warn("[InvWebhook] INV_WEBHOOK is not a Discord webhook link: the inventory webhook is off") end
+            else
+                local msgId = nil
+                local blockedUntil = 0          -- os.clock() until which we must not talk to Discord (rate limit / bad link)
+                local FILE = "inv_msg_" .. tostring(lp.UserId) .. ".txt"
+                local tail = base:sub(-12)      -- so a message id saved for another webhook is never reused
+
+                local function loadId()
+                    local ok, t = pcall(Store.read, FILE)
+                    if ok and type(t) == "string" then
+                        local tl, id = t:match("^(.-):(%d+)%s*$")
+                        if tl == tail and id then return id end
+                    end
+                end
+                local function saveId(id) pcall(Store.write, FILE, id and (tail .. ":" .. id) or "") end
+
+                local function num(n)
+                    local s = tostring(math.floor(tonumber(n) or 0))
+                    local r = s:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+                    return (r:gsub("^,", ""))
+                end
+
+                local RANK = { common = 1, uncommon = 2, rare = 3, epic = 4, legendary = 5, mythical = 6, mythic = 6, godly = 7 }
+                local function rarityRank(r)
+                    r = tostring(r or ""):lower()
+                    if r:find("secret", 1, true) then return 10 + (tonumber(r:match("%d+")) or 0) end
+                    return RANK[r] or 0
+                end
+                local VRANK = { Normal = 1, Golden = 2, Gold = 2, Diamond = 3, Rainbow = 4 }
+
+                local function call(method, url, payload)
+                    if not httpRequest then return nil end
+                    local ok, res = pcall(httpRequest, {
+                        Url = url, Method = method, Headers = { ["Content-Type"] = "application/json" },
+                        Body = HttpService:JSONEncode(payload),
+                    })
+                    if not ok or type(res) ~= "table" then return nil end
+                    return tonumber(res.StatusCode or res.status_code), res.Body
+                end
+                local function backoff(body)
+                    local ok, d = pcall(function() return HttpService:JSONDecode(body) end)
+                    local wait = (ok and type(d) == "table" and tonumber(d.retry_after)) or 5
+                    blockedUntil = os.clock() + math.min(wait, 60) + 1
+                end
+
+                -- Posts the message the first time, edits it afterwards. Returns true when Discord accepted it.
+                local function push(embed)
+                    if os.clock() < blockedUntil then return false end
+                    local payload = { embeds = { embed }, allowed_mentions = { parse = {} } }
+                    if msgId then
+                        local code, body = call("PATCH", base .. "/messages/" .. msgId, payload)
+                        if code == 200 then return true end
+                        if code == 429 then backoff(body) return false end
+                        if code == 404 then msgId = nil saveId(nil)   -- somebody deleted the message: post a new one below
+                        else return false end
+                    end
+                    payload.username = INV_NAME
+                    local code, body = call("POST", base .. "?wait=true", payload)
+                    if code == 200 then
+                        local ok, d = pcall(function() return HttpService:JSONDecode(body) end)
+                        if ok and type(d) == "table" and d.id then msgId = tostring(d.id) saveId(msgId) return true end
+                        return false
+                    end
+                    if code == 429 then backoff(body) return false end
+                    if code == 401 or code == 404 then
+                        warn("[InvWebhook] Discord refused the webhook (HTTP " .. tostring(code) .. "): check INV_WEBHOOK. Trying again in 5 minutes.")
+                        blockedUntil = os.clock() + 300
+                    end
+                    return false
+                end
+
+                -- who got added / removed between two reads
+                local function diff(oldIdx, newIdx)
+                    local gained, lost, counts, order = 0, 0, {}, {}
+                    for id, p in pairs(newIdx) do
+                        if not oldIdx[id] then
+                            gained = gained + 1
+                            local k = tostring(p.name) .. " (" .. tostring(p.tier) .. ")"
+                            if not counts[k] then counts[k] = 0 order[#order + 1] = k end
+                            counts[k] = counts[k] + 1
+                        end
+                    end
+                    for id in pairs(oldIdx) do if not newIdx[id] then lost = lost + 1 end end
+                    table.sort(order, function(a, b) if counts[a] ~= counts[b] then return counts[a] > counts[b] end return a < b end)
+                    return gained, lost, counts, order
+                end
+                local function names(counts, order)
+                    local t = {}
+                    for i = 1, math.min(#order, 3) do t[#t + 1] = order[i] .. (counts[order[i]] > 1 and (" x" .. counts[order[i]]) or "") end
+                    if #order > 3 then t[#t + 1] = "+" .. (#order - 3) .. " more" end
+                    return table.concat(t, ", ")
+                end
+
+                -- order independent fingerprint of the inventory (so "nothing changed" never causes an edit)
+                local function fingerprint(res)
+                    local h = ((tonumber(res.owned) or 0) * 7919 + (tonumber(res.equippedCount) or 0) * 104729) % 2147483647
+                    for _, g in ipairs(res.grouped or {}) do
+                        local k, v = tostring(g.name) .. "|" .. tostring(g.tier), 0
+                        for i = 1, #k do v = (v * 31 + k:byte(i)) % 1000003 end
+                        h = (h + v * (tonumber(g.count) or 0)) % 2147483647
+                    end
+                    return h
+                end
+
+                local function build(res, action)
+                    local grouped = {}
+                    for i, g in ipairs(res.grouped or {}) do grouped[i] = g end
+                    table.sort(grouped, function(a, b)
+                        local ra, rb = rarityRank(a.rarity), rarityRank(b.rarity)
+                        if ra ~= rb then return ra > rb end
+                        local va, vb = VRANK[a.tier] or 0, VRANK[b.tier] or 0
+                        if va ~= vb then return va > vb end
+                        if a.count ~= b.count then return a.count > b.count end
+                        return tostring(a.name) < tostring(b.name)
+                    end)
+                    local shown, rows, wName = math.min(#grouped, INV_ROWS), {}, 0
+                    for i = 1, shown do
+                        local nm = tostring(grouped[i].name)
+                        if #nm > 26 then nm = nm:sub(1, 24) .. ".." end
+                        rows[i] = nm
+                        wName = math.max(wName, #nm)
+                    end
+                    local lines = {}
+                    for i = 1, shown do
+                        local g = grouped[i]
+                        lines[i] = rows[i] .. string.rep(" ", wName - #rows[i]) .. "  " .. string.format("%-6s", "x" .. tostring(g.count))
+                            .. " " .. string.format("%-10s", tostring(g.rarity or "?")) .. " " .. tostring(g.tier)
+                    end
+                    local desc = #lines > 0 and ("```\n" .. table.concat(lines, "\n") .. "\n```") or "No pets found."
+                    if #grouped > shown then desc = desc .. "\n+" .. (#grouped - shown) .. " more pet types" end
+
+                    local owned = tonumber(res.owned) or 0
+                    local eq = tonumber(res.equippedCount) or 0
+                    local plrs = #Players:GetPlayers() .. "/" .. tostring(Players.MaxPlayers)
+                    local uname = (WebhookState and WebhookState.blur) and ("||" .. lp.Name .. "||") or lp.Name
+                    return {
+                        title = "Pet inventory report",
+                        description = desc,
+                        color = INV_COLOR,
+                        fields = {
+                            { name = "Username", value = uname, inline = true },
+                            { name = "Server players", value = plrs, inline = true },
+                            { name = "\u{200B}", value = "\u{200B}", inline = true },
+                            { name = "Equipped", value = tostring(eq) .. (res.equippedMax and ("/" .. tostring(res.equippedMax)) or ""), inline = true },
+                            { name = "Unequipped", value = num(math.max(owned - eq, 0)), inline = true },
+                            { name = "Total", value = num(owned) .. (res.capacity and (" / " .. num(res.capacity)) or ""), inline = true },
+                            { name = "Last action", value = action.text .. " · <t:" .. tostring(action.at) .. ":R>", inline = false },
+                        },
+                        footer = { text = "Updated" },
+                        timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+                    }
+                end
+
+                task.spawn(function()
+                    task.wait(5 + math.random() * 10)   -- spreads 15 accounts out so they do not all talk to Discord at once
+                    msgId = loadId()
+                    local prevIdx, latest, lastCount, lastHatches
+                    local baseCount, stable = -1, 0
+                    local lastForce, lastSent, lastSig, lastTrade = 0, -1e9, nil, -1e9
+                    local gap, pending = INV_GAP, false
+                    local action = { text = "Script started", at = os.time() }
+                    while alive and ((type(getgenv) ~= "function") or getgenv().TSR_AGENT_RUN == myRun) do
+                        task.wait(INV_LOOK)
+                        local okLoop, errLoop = pcall(function()
+                            local now = os.clock()
+                            local tradeNow = false
+                            pcall(function() tradeNow = (tradeBusy == true) or (giveActive == true) or (tflags.startedAt ~= nil and now - tflags.startedAt < 60) end)
+                            if tradeNow then lastTrade = now end
+
+                            local cnt = DATA.count()
+                            if not cnt then return end
+                            local hOk, hat = pcall(readHatches)
+                            if not hOk then hat = nil end
+
+                            local changed = (prevIdx == nil) or cnt ~= lastCount or (hat ~= nil and hat ~= lastHatches) or (now - lastForce >= INV_FORCE)
+                            if changed then
+                                local res, idx = DATA.read()
+                                if res and idx then
+                                    lastForce = now
+                                    if prevIdx == nil then
+                                        -- first look: wait until the pet list stops growing, then remember it as the starting point
+                                        if cnt == baseCount then stable = stable + 1 else stable = 0 end
+                                        baseCount = cnt
+                                        if stable >= 2 then
+                                            prevIdx, latest, lastCount, lastHatches = idx, res, cnt, hat
+                                            lastSig = fingerprint(res)
+                                            pending = true
+                                        end
+                                    else
+                                        local gained, lost, counts, order = diff(prevIdx, idx)
+                                        local hatched = (hat ~= nil and lastHatches ~= nil and hat > lastHatches) or (gained > 0 and lost == 0)
+                                        local recentTrade = (now - lastTrade) < 20
+                                        if gained > 0 or lost > 0 then
+                                            local text
+                                            if recentTrade then
+                                                text = (gained > 0 and lost == 0) and ("Received in trade: " .. names(counts, order))
+                                                    or (lost > 0 and gained == 0) and ("Traded away " .. lost .. " pet" .. (lost == 1 and "" or "s"))
+                                                    or ("Traded: +" .. gained .. " / -" .. lost .. " pets")
+                                            elseif hatched then
+                                                text = "Hatched: " .. (gained > 0 and names(counts, order) or "?")
+                                                if lost > 0 then text = text .. " · Deleted " .. lost end
+                                            elseif gained > 0 and lost > 0 then
+                                                text = "Crafted: used " .. lost .. ", got " .. names(counts, order)
+                                            else
+                                                text = "Deleted " .. lost .. " pet" .. (lost == 1 and "" or "s")
+                                            end
+                                            action = { text = text, at = os.time() }
+                                        end
+                                        prevIdx, latest, lastCount, lastHatches = idx, res, cnt, hat
+                                        local sig = fingerprint(res)
+                                        if sig ~= lastSig then lastSig = sig pending = true end
+                                    end
+                                end
+                            end
+
+                            if latest and now - lastSent >= INV_REFRESH then pending = true end
+                            if pending and latest and now - lastSent >= gap then
+                                if push(build(latest, action)) then
+                                    lastSent, pending = now, false
+                                    gap = INV_GAP + math.random() * 3
+                                else
+                                    lastSent = now - gap + 10   -- try again in about 10 seconds
+                                end
+                            end
+                        end)
+                        if not okLoop then warn("[InvWebhook] " .. tostring(errLoop)) task.wait(5) end
+                    end
+                end)
+            end
+        end
 
         -- WORSTHUB handshake: env.TSR_TRADE_BUSY is true while a trade is really happening (we are giving, a trade
         -- session started <30s ago, or the trade window shows an offer). WORSTHUB pauses craft / delete / trips while it is true.
