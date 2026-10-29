@@ -35,6 +35,10 @@
 --// 20. Trade (receiver): the request is now also accepted with the game's own Respond request (like Auto Accept / Pay First do), not only by pressing the
 --//     popup's Accept button. It answers the moment the Request event of the right sender arrives, and again if the popup is still showing after a press.
 --//     (fix for "did not accept in 90 seconds" while the trade request popup just sat there on the receiver.)
+--// 21. Trade (Review screen stuck, status "stuck"): Confirm is now sent as the game's own Confirm request right away and repeated (up to 6 times) until the server
+--//     echoes it; a trade that is still open after that is cancelled (the Review screen's own Cancel is pressed too, not only the pet picker's), and a trade
+--//     window left open by an earlier attempt is closed before a new giver / receiver job starts, so a retry no longer collides with it.
+--// 22. A trade now holds up to 40 pets (was 20): MAX_OFFER in this script, MT_CHUNK + the 40 limit in Tapsim.js, and every "20" message / check on the Trade page of worst.html.
 --// =====================================================================================================
 --// WORST Hub - Auto Hatch (Hatch tab) + Auto Craft (Pets tab)
 --// Execute as a normal script. Executing again closes the previous instance first.
@@ -10932,7 +10936,7 @@ local TradeAgent = (function()
         -- TRADE SAFETY (optional but recommended): list the ONLY usernames this account may ever trade with.
         -- Empty = whatever the site sends is allowed. Example: { "Thegreat_Worst", "MyAlt2" }
         local ALLOWED_PARTNERS = {}
-        local MAX_OFFER = 20         -- the game's limit per trade
+        local MAX_OFFER = 40         -- the game's limit per trade
 
         -- DATA SCAN (v9)
         local UI_FALLBACK = false    -- true = if the game data can't be read, open the Inventory and read the cards (old method)
@@ -11808,6 +11812,16 @@ local TradeAgent = (function()
         local function cancelTrade()
             local b = build()
             if winOpen() and b then click(walk(b, { "Actions", "Cancel", "Button" })) end
+            -- v21: on the Review screen the pet picker's Cancel is not the one that counts: press the Review screen's own Cancel too
+            local r = walk(pg(), { "Trading", "Trading", "Review" })
+            if winOpen() and r and r:IsA("GuiObject") and r.Visible then
+                for _, d in ipairs(r:GetDescendants()) do
+                    if norm(d.Name) == "cancel" then
+                        local btn = d:IsA("GuiButton") and d or d:FindFirstChild("Button")
+                        if btn and click(btn) then break end
+                    end
+                end
+            end
         end
 
         -- Debug: prints the Review screen.
@@ -12108,7 +12122,7 @@ local TradeAgent = (function()
         local function closeStaleWindow()
             local g = winGui()
             if not (g and winOpen()) then return end
-            click(walk(build(), { "Actions", "Cancel", "Button" }))   -- also ends a fresh empty session, if the game opened one
+            pcall(cancelTrade)   -- also ends a fresh empty session, if the game opened one (v21: and a Review screen)
             task.wait(1)
             if winOpen() then
                 g.Enabled = false
@@ -12156,24 +12170,32 @@ local TradeAgent = (function()
 
         -- Presses the Confirm button of the trade.
         local function pressConfirm()
-            -- 1) the real button on the Review screen (a Frame/Button named "Confirm", usually with a child "Button")
-            local r = walk(pg(), { "Trading", "Trading", "Review" })
-            if r then
-                for _, d in ipairs(r:GetDescendants()) do
-                    if norm(d.Name) == "confirm" then
-                        local btn = d:IsA("GuiButton") and d or d:FindFirstChild("Button")
-                        if btn and click(btn) then dbg("Confirm: clicked", d:GetFullName()) break end
+            -- v21: the button press needs getconnections and can silently do nothing, and one Confirm request can be refused right after the Review screen
+            -- opens. So: press the button once, then send the game's own Confirm request and repeat it until the server shows OUR confirm
+            -- (or both confirmed / the trade ended). Never repeated once our confirm was echoed, so it can't toggle back.
+            local function done() return tflags.myConfirm or tflags.completed or tflags.countdown end
+            for try = 1, 6 do
+                if done() then return true end
+                if not winOpen() then return done() and true or false end
+                if try == 1 then
+                    local r = walk(pg(), { "Trading", "Trading", "Review" })
+                    if r then
+                        for _, d in ipairs(r:GetDescendants()) do
+                            if norm(d.Name) == "confirm" then
+                                local btn = d:IsA("GuiButton") and d or d:FindFirstChild("Button")
+                                if btn and click(btn) then dbg("Confirm: clicked", d:GetFullName()) break end
+                            end
+                        end
                     end
+                    if waitFor(done, 1.5) then return true end
                 end
+                if tradeRequestRE then
+                    dbg("Confirm: firing TradeRequested {Action='Confirm'}, try", try)
+                    pcall(function() tradeRequestRE:FireServer({ Action = "Confirm" }) end)
+                end
+                if waitFor(done, 3) then return true end
             end
-            if waitFor(function() return tflags.myConfirm or tflags.completed end, 2) then return true end
-            -- 2) fallback: send exactly what the game's own button sends
-            if tradeRequestRE then
-                dbg("Confirm: button did not register, firing TradeRequested {Action='Confirm'}")
-                tradeRequestRE:FireServer({ Action = "Confirm" })
-                return waitFor(function() return tflags.myConfirm or tflags.completed end, 3) ~= nil
-            end
-            return false
+            return done() and true or false
         end
 
 
@@ -12289,6 +12311,9 @@ local TradeAgent = (function()
                 setTrade(id, "done", true, "trade completed")
             elseif winOpen() then
                 setTrade(id, "stuck", false, "still open after Confirm (see the Review screen output in the console)")
+                pcall(cancelTrade)   -- v21: free both accounts, otherwise the retry runs into this leftover window
+                task.wait(1.5)
+                if winOpen() then pcall(closeStaleWindow) end
             else
                 setTrade(id, "done", true, "trade window closed (completed or cancelled by the other side)")
             end
@@ -12372,6 +12397,10 @@ local TradeAgent = (function()
             if not partnerAllowed(t.partner) then return setTrade(id, "failed", false, t.partner .. " is not in ALLOWED_PARTNERS") end
             local target = findPlayer(t.partner)
             if not target then return setTrade(id, "failed", false, t.partner .. " is not in this server") end
+            if winOpen() then   -- v21: a trade window left open by an earlier attempt would be taken for the new trade
+                setTrade(id, "cleanup", true, "closing a trade window that was left open")
+                pcall(closeStaleWindow)
+            end
 
             if #t.unequip > 0 then
                 setTrade(id, "unequipping", true, "taking equipped pets off before the trade")
@@ -12467,6 +12496,10 @@ local TradeAgent = (function()
             if not t then return setTrade(id, "failed", false, err) end
             if not partnerAllowed(t.partner) then return setTrade(id, "failed", false, t.partner .. " is not in ALLOWED_PARTNERS") end
             if t.expect < 1 or t.expect > MAX_OFFER then return setTrade(id, "failed", false, "bad expected pet count") end
+            if winOpen() then   -- v21: a leftover trade window would count as "the request was accepted"
+                setTrade(id, "cleanup", true, "closing a trade window that was left open")
+                pcall(closeStaleWindow)
+            end
             setTrade(id, "waiting", true, "waiting for a trade request from " .. t.partner)
             -- v19: the trade window is NOT forced visible any more: the game opens it by itself when the trade really starts
 
@@ -13186,7 +13219,7 @@ local TradeAgent = (function()
         local GV_NONE = "None (pick a pet)"
         local gvPick = {
             type = "dropdown", name = "Giveaway Pet", icon = "\u{1F43E}", noSave = true, width = 320,
-            desc = "Pick the pet to give away. Each trade offers up to 20 of it; when more are left, the next trade offers up to 20 again, until none are left.",
+            desc = "Pick the pet to give away. Each trade offers up to 40 of it; when more are left, the next trade offers up to 40 again, until none are left.",
             options = { GV_NONE }, default = GV_NONE,
         }
         local gvToggle = {
@@ -13308,8 +13341,8 @@ local TradeAgent = (function()
 
         -- =====================================================================================
         -- GIVEAWAY (Trade tab > Giveaway): the Pay First engine below, with nothing to pay.
-        -- Every incoming request is accepted, up to 20 of the chosen pet are offered (re-counted for every trade, so the next
-        -- trade offers 20 again until the pet runs out), then Ready (Lock) + Confirm, and it waits for the next request.
+        -- Every incoming request is accepted, up to 40 of the chosen pet are offered (re-counted for every trade, so the next
+        -- trade offers 40 again until the pet runs out), then Ready (Lock) + Confirm, and it waits for the next request.
         -- =====================================================================================
         local GV = { key = nil, repeatUser = true, given = {} }
         local GV_FILE = "giveaway_given_" .. tostring(lp.UserId) .. ".txt"
