@@ -41,9 +41,37 @@
 --// 22. A trade now holds up to 40 pets (was 20): MAX_OFFER in this script, MT_CHUNK + the 40 limit in Tapsim.js, and every "20" message / check on the Trade page of worst.html.
 --// 23. Secret Collect (Trade tab, on by default): when the player Worst_Trader sends this account a trade request it is accepted automatically and every Secret-rarity pet
 --//     (up to 40 per trade) is offered, locked and confirmed by itself. Locked / equipped Secret pets are unlocked / unequipped first. Auto Accept stands down meanwhile.
+--// 25. Site Trade / Multi Trade: send requests directly via TradingService TradeRequested Request; receiver accepts only the expected FromUserId via Respond. No GUI send/accept clicks.
 --// 24. Debug webhook: one Discord message PER ACCOUNT, edited in place like the inventory webhook, showing the live state (storage, Auto Craft / Rainbow / Collect / Hatch / Kaitun
 --//     status, priority order, who holds the machine lock, what blocks Craft, trade state, FPS / ping, last warnings) plus automatic flags (inventory full, craft blocked,
 --//     machine lock held too long, craft status frozen ...). Link and switches: DBG_WEBHOOK / DBG_ON next to the inventory webhook.
+--// 25. Inventory Discord embed now shows the current server Job ID above the pet list, ready to copy into Miscellaneous > Join Job ID.
+--// 26. Pets > Enchanting is now a pet card grid (rarity buttons -> pet type -> one card per pet; click a card for Select Enchant / Rename Pet). The old controls (Auto Enchant, Enchant V2 ...) moved to Pets > Auto Enchant. Visual only for now.
+--// 27. Pets > Enchanting fix: pet cards are registered the moment they are created, their texts are built before the icon, the icon is drawn in its own thread
+--//     (the game's PetCardRenderer can stall, which left blank orphan cards, a frozen status line and a rarity button showing the pet label); errors now show in the status box.
+--// 28. Pets > Enchanting redesigned (that page only): 4 plain steps - rarity buttons, pet type list, pet cards, selected pet panel (slots, Select Enchant = tick the enchants you want, Rename Pet).
+--//     No dropdowns / animations any more. Select Enchant keeps the choice in Config.enchantWanted[pet id]; Rename is not connected to the game yet.
+--// 29. Pets > Enchanting now enchants: toggle next to "4 SELECTED PET"; every pet with enchants chosen joins a queue (#1, #2 ... badge on the card) and is rolled with the game's
+--//     own auto roll (SetFilters -> AutoStart -> Claim) slot by slot until it holds a chosen enchant, then the next pet follows. Rare enchants are never rolled over; it waits while
+--//     Auto Enchant / Enchant V2 / Kaitun is rolling. Rename Pet is wired to PetService.RF.SetNickname.
+--// 30. Pets > Enchanting is animated (that page only): rarity buttons drop in, the pet type list slides in one row after the other when a rarity button is pressed,
+--//     pet cards pop in with a stagger, the selected pet panel slides in, buttons / rows / cards react to hover + press, the selected card and the running toggle pulse,
+--//     queue badges pop in, the page replays its entrance every time you open it. "Replace rare enchants" now sits below "Rename Pet".
+--// 31. FPS Cap removed completely (the Settings slider, Config.fps / applyFps / fpsEvent and the Dig FPS boost): the script never touches the FPS any more.
+--//     The Mini Ui no longer switches 3D rendering off (no black screen); only Settings > Ui > Disable 3D Rendering does that.
+--//     The Mini Ui opens by itself after IDLE_SECS (60 s) without any interaction with the hub since the script was executed (AUTO_LITE = true, no "Are you afk?" popup).
+--// 32. Trade > Sell page: Auto Accept Trade / Auto Ready / Auto Confirm, "Pets to Sell" dropdown, "Pets in Inventory" + "Input Pet Value" + Save, and a "Pet Values" list
+--//     (same look as the Configuration list, with Edit + x). The partner only sends tokens: pets offered = floor(tokens / value) of the one pet being sold
+--//     (value 10, they send 300 -> 30 pets). Values are kept in sell_values_<UserId>.json. Buttons can now carry their own text (entry.btnText).
+--// 33. Pets > Enchanting: the cards and the selected-pet panel now follow the game's data (a slot that unlocks / gets an enchant shows up by itself).
+--//     New switch "Unlock 2nd slot" under Enchant: a pet set to Slot 2 / Both whose slot 2 is still locked keeps rerolling slot 1 (even on a wanted enchant) until slot 2 appears.
+--// 34. Miscellaneous: Luck/Coins potion tiers refresh independently; Gems potion tiers are used only immediately before Auto Rebirth attempts.
+--// 35. Auto Rebirth: the "Best" amount is now "Auto". It reads your coins (data.Currencies.Coins) and the game's own prices (RebirthConfig.GetPrice) and fires only the most expensive
+--//     unlocked amount you can afford; a fixed amount fires as soon as you can afford it; nothing (pet swap, potions, request) happens before that. Rebirth Delay only applies in Auto.
+--//     The dropdown labels now use the game's real amounts (RebirthConfig.GetAmountFromIndex, up to +750,000,000,000).
+--// 37. Kaitun: Kaitun Hatch now runs Auto Rebirth itself (moved from Kaitun Stats; Kaitun Stats keeps Auto Equip + enchanting) and switches on Auto Luck Potion, Auto Coins Potion
+--//     and Auto Claim Quests (new green check "boosts" on the Kaitun tab). Auto Rebirth no longer treats data.Upgrades.RebirthButtons as a lock; an amount the server refuses is skipped for 1 minute.
+--// 36. Miscellaneous: "Auto Claim Quests" claims every finished quest in the Quests list (QuestService.RF.ClaimQuest) for its potion rewards.
 --// =====================================================================================================
 --// WORST Hub - Auto Hatch (Hatch tab) + Auto Craft (Pets tab)
 --// Execute as a normal script. Executing again closes the previous instance first.
@@ -69,13 +97,11 @@
 --//                  page [Dig] -> "Auto Dig" (Autumn dig spot, hits the timing bar by itself, max 10 digs per hour; Kaitun Hatch/Events no longer switch it on)
 --// Trade tab    : "Choose Pets" dropdown ("+  pet  -" rows: left click = +1, right click = -1, + / - buttons for touch) + "Tokens They Must Pay" + "Auto Trade (Pay First)" -> accepts requests, offers exactly those pets and only Locks / Confirms once the other player's offer reaches the amount
 --// Priority tab : Double Jump first; Craft, Auto Balloons, Auto Trick or Treat, Auto Kill Hallow Lord, Auto Dig and Hatch (saved in WORST/priority.txt)
---// LITE MODE   : (automatic switching is OFF: AUTO_LITE = false near the end of the file. The Mini Ui only opens from Settings > Mini Ui.) Old behaviour: if nothing was toggled by hand since execute and the hub is left alone for 60 s, an "Are you afk?" popup shows; ignore it for another 60 s and the
---//                  main window closes and a small window (Kaitun Hatch + Kaitun Stats switched on; Kaitun Events is yours to switch on) opens. Times: IDLE_SECS / AFK_SECS near the end of the file.
---// Settings tab : two pages (General / Ui). Ui = Animated Background, Minimize Keybind, Auto Save Configuration, Show Status, Auto Rejoin, Anti AFK, Save Configuration, Configuration List,
---//                  FPS Cap; General = everything else. "Reset Script" is a button at the top right of the tab.
+--// LITE MODE   : if nothing was toggled by hand since execute and the hub is left alone for 60 s, the hub shrinks away and the small Mini Ui opens by itself (Kaitun Hatch + Kaitun Stats
+--//                  switched on; Kaitun Events is yours to switch on). It does not touch the FPS or 3D rendering. Time: IDLE_SECS near the end of the file (AUTO_LITE = false turns it off).
+--// Settings tab : two pages (General / Ui). Ui = Animated Background, Minimize Keybind, Auto Save Configuration, Show Status, Auto Rejoin, Anti AFK, Save Configuration, Configuration List;
+--//                  General = everything else. "Reset Script" is a button at the top right of the tab.
 --//                  "Minimize Keybind" -> click it, press any key, that key now minimizes / restores the hub (default Left Ctrl)
---//                  "FPS Cap" slider -> limits your FPS (Off = no limit, needs setfpscap). While the small Lite window is open the cap is forced to 5 FPS
---//                  and the slider value is put back when you return to the full UI. Normal Kaitun (full UI) only uses the slider.
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
@@ -1043,10 +1069,6 @@ end
 local Config = {}
 Config.override  = {}   -- control id -> value that is SAVED instead of the live one (Kaitun Hatch owns those controls while it is on)
 Config.pageLists = {}   -- tab name -> the scrolling list of a one-page tab
--- FPS cap: the Settings slider sets .user (0 = Off); the Lite window sets .lite = true (forced to LITE_CAP)
--- .event = true while an event feature (Trick or Treat, Hallow Lord, Dig, Balloons, Pet Defense, Double Jump) is on its trip: the Lite window then
--- runs at EVENT_CAP instead of LITE_CAP (5 FPS is too low: the character jumps several times before it even lands).
-Config.fps = { user = 0, touched = false, lite = false, active = false, LITE_CAP = 0, EVENT_CAP = 0, event = false }   -- Mini Ui no longer limits FPS (0 = no limit)
 Config.execName = function()   -- the executor's name as it reports itself ("Unknown" when it doesn't)
 	local name = "Unknown"
 	pcall(function()
@@ -1057,44 +1079,7 @@ Config.execName = function()   -- the executor's name as it reports itself ("Unk
 	end)
 	return name
 end
-Config.fpsFn = function()   -- the executor's FPS cap function (some mobile executors only have one of the other names)
-	-- Delta: no FPS cap at all (checked first, before any cap function is looked up), so the cap does nothing there
-	if string.find(string.lower(Config.execName()), "delta", 1, true) then return nil end
-	if typeof(setfpscap) == "function" then return setfpscap end
-	if typeof(set_fps_cap) == "function" then return set_fps_cap end
-	if typeof(setfps) == "function" then return setfps end
-	-- no cap function at all: set Roblox's own FPS target through the fast flags instead. 0 = back to the value it had.
-	if typeof(setfflag) == "function" then
-		return function(n)
-			n = math.floor(tonumber(n) or 0)
-			Config.fpsOrig = Config.fpsOrig or (function()
-				if typeof(getfflag) ~= "function" then return false end
-				local ok, v = pcall(getfflag, "DFIntTaskSchedulerTargetFps")
-				return ok and tostring(v) ~= "" and tostring(v) or false
-			end)()
-			local v = n > 0 and tostring(n) or (Config.fpsOrig or "9999")
-			pcall(setfflag, "DFIntTaskSchedulerTargetFps", v)   -- the executors accept one of these two spellings
-			pcall(setfflag, "TaskSchedulerTargetFps", v)
-		end
-	end
-	return nil
-end
-Config.applyFps = function()
-	local f = Config.fps
-	local fn = Config.fpsFn()
-	if not fn then return end
-	if not (f.lite or f.touched or f.active) then return end   -- never touch the cap unless the slider / Lite window needs it
-	f.active = true
-	pcall(fn, f.lite and (f.event and f.EVENT_CAP or f.LITE_CAP) or f.user)
-end
-Config.fpsEvent = function(on)
-	Config.fps.event = on == true
-	if Config.fps.lite then Config.applyFps() end
-end
-table.insert(cleanupHooks, function()   -- closing / re-executing the hub puts the cap back to "no limit"
-	local fn = Config.fpsFn()
-	if Config.fps.active and fn then pcall(fn, 0) end
-end)
+-- (the FPS cap was removed: the script never changes the FPS)
 local controls = {}
 
 ------------------------------------------------------------------ HATCH + CRAFT LOGIC
@@ -2061,7 +2046,6 @@ local function buildLogic()
 	-- HG.want = the Auto Hatch toggle as you set it; the hatch itself is started / paused automatically from it.
 	local tripOwner = nil   -- who is on a machine trip right now (only one at a time)
 	local HG = { want = false, waiting = {}, order = { "DoubleJump", "Balloon", "Craft", "TrickOrTreat", "HallowLord", "PetDefense", "Dig", "Hatch" } }   -- waiting[name] = rank of a feature queued for the machine
-	HG.fpsEvents = { Halloween = true, HalloweenBoss = true, PetDefense = true, Dig = true, Balloon = true, DoubleJump = true }   -- trips that need more than the Mini Ui's 5 FPS
 	HG.rank = function(kind)
 		for i, k in ipairs(HG.order) do if k == kind then return i end end
 		return 99
@@ -2328,7 +2312,6 @@ local function buildLogic()
 			if not why then
 				tripOwner = name
 				HG.waiting[name] = nil
-				if HG.fpsEvents[name] then Config.fpsEvent(true) end   -- Mini Ui: 30 FPS for the whole event trip (5 FPS makes jumps glitch)
 				HG.sync()
 				return true
 			end
@@ -2346,7 +2329,6 @@ local function buildLogic()
 	local function releaseTrip(name)
         if tripOwner == name then
             tripOwner = nil
-            if HG.fpsEvents[name] then Config.fpsEvent(false) end
         end
         HG.sync() -- hatch comes back only when nothing else is running or waiting
     end
@@ -6758,7 +6740,7 @@ local function buildLogic()
 		local mainEntry = {
 			-- TOGGLE "Kaitun Hatch": MASTER toggle: switches every other feature off and runs your setup (Priority tab order) - auto delete, hatch the latest detected egg, craft + coll...
 			type = "toggle", name = "Kaitun Hatch", icon = "⚡", default = false,   -- saved: with Auto Save on, loading the config switches Kaitun back on (and ONLY Kaitun: every other toggle stays off)
-			desc = "MASTER toggle: switches every other feature off and runs your setup (Priority tab order) - auto delete, hatch the latest detected egg, craft + collect, Anti AFK, Auto Rejoin, Show Status. (Pets, Auto Equip and Auto Rebirth are handled by Kaitun Stats.)",
+			desc = "MASTER toggle: switches every other feature off and runs your setup (Priority tab order) - auto delete, hatch the latest detected egg, craft + collect, Anti AFK, Auto Rejoin, Show Status. Also runs Auto Rebirth (Auto amount, only with enough coins) and switches on Auto Luck Potion, Auto Coins Potion and Auto Claim Quests. (Pets and Auto Equip are handled by Kaitun Stats.)",
 		}
 		local secondEntry = {
 			-- TOGGLE "Kaitun Events": Starts Auto Chest Coins, Auto Trick or Treat, Auto Kill Hallow Boss and Auto Purchase Items by itself and shows live numbers here (works with Kaitu...
@@ -6788,7 +6770,7 @@ local function buildLogic()
 		-- skip[key] = true -> Kaitun leaves that part alone. While its master toggle is running the change is applied at once (hooks).
 		-- keys: delete, hatch, afk, rebirth (Kaitun Hatch) / chest, treat, boss, shop (Kaitun Events)
 		local skip, hooks = {}, {}
-		local SKIP_KEYS = { "delete", "hatch", "afk", "rebirth", "chest", "treat", "boss", "shop" }
+		local SKIP_KEYS = { "delete", "hatch", "afk", "boosts", "rebirth", "chest", "treat", "boss", "shop" }
 		do
 			local okR, raw = pcall(function() return hasFiles and Store.read("kaitunskip.txt") or nil end)
 			if okR and type(raw) == "string" then
@@ -9442,24 +9424,6 @@ local function buildLogic()
 				if botConn then pcall(function() botConn:Disconnect() end) botConn = nil end
 			end
 
-			-- the Lite window caps the FPS at 5, far too low to time the bar: lift the cap while a dig is running
-			local boosted = false
-			-- Lowers or restores the FPS cap while digging (the timing bar needs a smooth game).
-			local function boost(on)
-				local capFn = Config.fpsFn()
-				if not capFn then return end
-				if on then
-					local f = Config.fps
-					if f.lite or (f.touched and f.user > 0 and f.user < 60) then
-						pcall(capFn, 60)
-						boosted = true
-					end
-				elseif boosted then
-					boosted = false
-					Config.applyFps()
-				end
-			end
-
 			---------------------------------------------------------------- wait for the server's actual dig window
 			local function waitForSlot(id)
 				while dActive(id) do
@@ -9533,7 +9497,6 @@ local function buildLogic()
 							waitAfter = 10
 							break
 						end
-						boost(true)   -- no FPS cap while pressing / digging (released when the visit ends)
 						say(string.format("At Dig CFrame | pressing in %gs...", PRESS_DELAY))
 						dSleep(id, PRESS_DELAY)   -- press the screen PRESS_DELAY seconds after reaching the CFrame
 						if not dActive(id) then break end
@@ -9606,7 +9569,6 @@ local function buildLogic()
 						dSleep(id, NEXT_WAIT)
 					end
 				end)
-				boost(false)
 				releaseTrip("Dig")
 				if not ok then error(err, 0) end
 				if waitAfter then
@@ -9645,8 +9607,7 @@ local function buildLogic()
 				else
 					stopBot()
 					dropListener()
-					boost(false)
-					releaseTrip("Dig")
+						releaseTrip("Dig")
 					say(DESC)
 				end
 			end
@@ -9656,7 +9617,6 @@ local function buildLogic()
 				dRun = dRun + 1
 				stopBot()
 				dropListener()
-				boost(false)
 			end)
 
 			return { toggle = toggle }
@@ -10435,12 +10395,14 @@ local Utility = (function()
 	return U
 end)()
 
+local drinkGemsBeforeRebirth = function() end -- assigned by Miscellaneous Auto Gems Potion
+
 local AutoRebirth = (function()
 	local RS = game:GetService("ReplicatedStorage")
-	local MAX_INDEX   = 16     -- number of rebirth indexes; index i gives +5^(i-1) rebirths (1, 5, 25, 125, ...)
+	local MAX_INDEX   = 18     -- number of rebirth indexes in the game (RebirthButtonConfig.MaximumLaunchOptions); the real amounts come from RebirthConfig.GetAmountFromIndex (1, 5, 25, 125, 600 ... 150B, 750B)
 	local PROBE_GAP   = 0.4    -- "Best": seconds between two tries
 	local RESULT_WAIT = 1.2    -- "Best": seconds to wait for the server's answer to one try
-	local BEST        = "Best (most expensive you can afford)"
+	local BEST        = "Auto (most expensive you can afford)"
 	local MIN_DELAY   = 5     -- minimum seconds between rebirth requests
 	local state = { on = false, index = 1, best = true, delay = MIN_DELAY, sent = 0, loopId = 0 }
 
@@ -10463,9 +10425,33 @@ local AutoRebirth = (function()
 		return out
 	end
 
+	-- the game's own rebirth maths: RebirthConfig (amount of every index + price) and RebirthButtonConfig (how many buttons you have unlocked)
+	local rcfg, bcfg
+	pcall(function() rcfg = require(RS.Shared.Progression.RebirthConfig) end)
+	pcall(function() bcfg = require(RS.Shared.Progression.RebirthButtonConfig) end)
+	if rcfg and not (type(rcfg.GetAmountFromIndex) == "function" and type(rcfg.GetPrice) == "function") then rcfg = nil end
+	-- rebirths an index gives (1, 5, 25, 125, 600, 3000 ... 750,000,000,000); 5^(i-1) only if the game's module can't be read
+	local function amountOf(i)
+		if rcfg then
+			local ok, a = pcall(rcfg.GetAmountFromIndex, i)
+			if ok and type(a) == "number" and a > 0 then return a end
+		end
+		return 5 ^ (i - 1)
+	end
+	-- 1234567 -> "1.23M" (for the status line)
+	local SUFFIX = { "K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc" }
+	local function short(n)
+		n = tonumber(n) or 0
+		if n < 1000 then return string.format("%.0f", n) end
+		local i = 0
+		while n >= 1000 and i < #SUFFIX do n = n / 1000 i = i + 1 end
+		if n >= 1000 then return string.format("%.2e", n * 1000 ^ i) end
+		return string.format("%.2f", n) .. SUFFIX[i]
+	end
+
 	local options, labelToIndex, indexToLabel = { BEST }, {}, {}
 	for i = 1, MAX_INDEX do
-		local label = "+" .. commas(5 ^ (i - 1))
+		local label = "+" .. commas(amountOf(i))
 		options[#options + 1] = label
 		labelToIndex[label] = i
 		indexToLabel[i] = label
@@ -10475,6 +10461,7 @@ local AutoRebirth = (function()
 	--  1) an answer event next to RebirthRequested (a table with Success / Ok, or a boolean)
 	--  2) a number whose key contains "rebirth" in your data changing (the rebirth counter)
 	local resultFlag = nil
+	local lastResult = nil   -- the last RebirthResult table the server sent (Success, Index, Amount, Price ...)
 	local hooked = 0
 	do
 		local re = nil
@@ -10484,6 +10471,7 @@ local AutoRebirth = (function()
 				if r:IsA("RemoteEvent") and r.Name ~= "RebirthRequested" then
 					hooked = hooked + 1
 					connect(r.OnClientEvent, function(a)
+						if type(a) == "table" then lastResult = a end
 						if a == true or (type(a) == "table" and (a.Success == true or a.Ok == true)) then
 							resultFlag = true
 						elseif a == false or (type(a) == "table" and (a.Success == false or a.Ok == false)) then
@@ -10545,21 +10533,21 @@ local AutoRebirth = (function()
 	local toggle = {
 		-- TOGGLE "Auto Rebirth": Fires a rebirth request over and over until you switch it off.
 		type = "toggle", name = "Auto Rebirth", icon = "🔁", default = false,
-		desc = "Fires a rebirth request over and over until you switch it off.",
+		desc = "Only rebirths when you have enough coins for it (checked with the game's own prices).",
 	}
 	local indexEntry = {
 		type = "dropdown", name = "Rebirth Amount", icon = "#", width = 300,
-		desc = "How many rebirths each request gives (+1, +5, +25, +125 ... x5 each step). \"Best\" picks the most expensive one you can afford. Changes apply live.",
+		desc = "How many rebirths each request gives (the game's own amounts, up to +750,000,000,000). A fixed amount fires the moment you can afford it. \"Auto\" checks your coins and fires the most expensive amount you can afford. Changes apply live.",
 		options = options, default = BEST,
 	}
 	local delayEntry = {
 		type = "slider", name = "Rebirth Delay", icon = "🕐", min = MIN_DELAY, max = 3600, default = MIN_DELAY, step = 1, suffix = "s",
-		desc = "Seconds to wait between rebirth requests (minimum 5s, up to 1 hour).",
+		desc = "Only used when Rebirth Amount is \"Auto\": seconds to wait after a rebirth before the next one, so your coins can build up for a bigger amount (minimum 5s, up to 1 hour). A fixed amount ignores it.",
 	}
 
 	indexEntry.callback = function(option)
 		option = tostring(option)
-		if option == BEST then
+		if option == BEST or option:sub(1, 4) == "Best" or option:sub(1, 4) == "Auto" then   -- "Best ..." = the old name of Auto (saved configs)
 			state.best = true
 		else
 			state.best = false
@@ -10592,53 +10580,146 @@ local AutoRebirth = (function()
 		return false
 	end
 
+	-- your coins, rebirth count and how many rebirth buttons you have unlocked (nil if the game's data can't be read)
+	local function readStats()
+		local okD, data = pcall(function() return require(RS.Controllers.Core.DataController):GetReplica().Data end)
+		if not (okD and type(data) == "table") then return nil end
+		local cur = type(data.Currencies) == "table" and data.Currencies or {}
+		local stat = type(data.Statistics) == "table" and data.Statistics or {}
+		local upg = type(data.Upgrades) == "table" and data.Upgrades or {}
+		local coins = tonumber(cur.Coins)
+		local rebirths = tonumber(stat.Rebirths)
+		if not rebirths then
+			local ls = game:GetService("Players").LocalPlayer:FindFirstChild("leaderstats")
+			local v = ls and ls:FindFirstChild("Rebirths")
+			rebirths = v and tonumber(v.Value)
+		end
+		if not (coins and rebirths) then return nil end
+		-- every index is tried: the game lists all of them (data.Upgrades.RebirthButtons is not a reliable lock). If the server refuses one,
+		-- Auto skips it for a minute (see "blocked") and uses the next smaller affordable one.
+		return coins, rebirths, MAX_INDEX
+	end
+	-- coin price of one index at your current rebirth count (the price grows with every rebirth you have)
+	local function priceOf(idx, rebirths)
+		local ok, p = pcall(rcfg.GetPrice, amountOf(idx), rebirths)
+		return ok and type(p) == "number" and p or nil
+	end
+	-- the index to fire right now, or nil if you can't afford it yet: Auto = the most expensive unlocked index you can afford, fixed = the chosen one
+	local blocked = {}   -- index -> os.clock() until which Auto skips it (the server refused it)
+	local function pick(coins, rebirths, unlocked)
+		if state.best then
+			for i = unlocked, 1, -1 do
+				if (blocked[i] or 0) < os.clock() then
+					local p = priceOf(i, rebirths)
+					if p and p <= coins then return i, p end
+				end
+			end
+			return nil
+		end
+		local want = math.min(state.index, unlocked)
+		local p = priceOf(want, rebirths)
+		if p and p <= coins then return want, p end
+		return nil
+	end
+
 	toggle.callback = function(on)
 		state.on = on == true
 		state.loopId = state.loopId + 1
 		if not state.on then
-			toggle.desc = "Fires a rebirth request over and over until you switch it off."
+			toggle.desc = "Only rebirths when you have enough coins for it (checked with the game's own prices)."
 			return
 		end
 		local my = state.loopId
 		task.spawn(function()
 			local warned = false
-			while alive and state.on and state.loopId == my do
-				if state.before then pcall(state.before) end   -- Kaitun: equip the Richest pets just before the rebirth
+			local function live() return alive and state.on and state.loopId == my end
+			-- waits up to `secs`, stops early when Auto Rebirth is switched off
+			local function nap(secs)
+				local t0 = os.clock()
+				while live() and os.clock() - t0 < secs do task.wait(0.25) end
+			end
+			while live() do
 				local remote = getRemote()
 				if not remote then
 					status("[Debug] RebirthService.RE.RebirthRequested not found")
-				elseif not state.best then
-					local ok, err = pcall(function() remote:FireServer({ Index = state.index }) end)
-					if ok then
-						state.sent = state.sent + 1
-						status(string.format("Running | %s | requests sent: %d", indexToLabel[state.index] or "?", state.sent))
+					nap(2)
+				elseif rcfg then
+					---------------- coin check: nothing at all happens (no pet swap, no potions, no request) until you can afford it
+					local coins, rebirths, unlocked = readStats()
+					if not coins then
+						status("Can't read your coins / rebirths yet ...")
+						nap(1)
 					else
-						warn("[Rebirth] fire failed: " .. tostring(err))
-					end
-				elseif hooked == 0 and counter(true) == nil then
-					-- no way to see whether a try worked: trying every index would rebirth more than once
-					status("Best can't tell if a rebirth worked (no answer event / counter found) - pick an amount instead")
-					if not warned then
-						warned = true
-						warn("[Rebirth] Best: found no RebirthService answer event and no number with 'rebirth' in its name in your data")
+						local idx, price = pick(coins, rebirths, unlocked)
+						if not idx then
+							local need = state.best and 1 or math.min(state.index, unlocked)
+							status(string.format("Waiting for coins | need %s for +%s | have %s", short(priceOf(need, rebirths) or 0), short(amountOf(need)), short(coins)))
+							nap(0.5)
+						else
+							if state.before then pcall(state.before) end   -- Kaitun: equip the Richest pets just before the rebirth
+							pcall(drinkGemsBeforeRebirth)                  -- Gems potions only when a rebirth is really about to happen
+							-- the swap / potions took a moment: read the coins again (Auto may now afford a bigger amount)
+							local c2, r2, u2 = readStats()
+							if c2 and live() then idx, price = pick(c2, r2, u2) end
+							if idx and live() then
+								resultFlag, lastResult = nil, nil
+								local ok, err = pcall(function() remote:FireServer({ Index = idx }) end)
+								if ok then
+									state.sent = state.sent + 1
+									local t0 = os.clock()
+									while live() and resultFlag == nil and os.clock() - t0 < RESULT_WAIT do task.wait(0.1) end
+									if resultFlag == false then
+										if state.best then blocked[idx] = os.clock() + 60 end   -- Auto: the next try uses a smaller amount
+										status(string.format("Server refused +%s%s | requests sent: %d", short(amountOf(idx)), state.best and " (Auto skips it for 1 min)" or "", state.sent))
+										nap(state.best and 0.5 or 2)
+									else
+										local got = type(lastResult) == "table" and tonumber(lastResult.Amount) or amountOf(idx)
+										status(string.format("Rebirthed +%s for %s coins | %s | requests sent: %d", short(got), short(price or 0), state.best and "Auto" or "fixed", state.sent))
+									end
+								else
+									warn("[Rebirth] fire failed: " .. tostring(err))
+									nap(2)
+								end
+							end
+							if state.after then pcall(state.after) end   -- Kaitun: back to the Luckiest pets for hatching
+							if state.best then nap(state.delay) else nap(0.3) end   -- the delay only exists in Auto: it lets the coins build up for a bigger amount
+						end
 					end
 				else
-					local done = nil
-					for idx = MAX_INDEX, 1, -1 do
-						if not (alive and state.on and state.loopId == my) then break end
-						status(string.format("Best | trying %s ...", indexToLabel[idx]))
-						if attempt(remote, idx) then done = idx break end
-						task.wait(PROBE_GAP)
-					end
-					if done then
-						status(string.format("Best | rebirthed %s | requests sent: %d", indexToLabel[done], state.sent))
+					---------------- fallback (the game's RebirthConfig module could not be loaded): the old way, no coin check
+					if state.before then pcall(state.before) end
+					pcall(drinkGemsBeforeRebirth)
+					if not state.best then
+						local ok, err = pcall(function() remote:FireServer({ Index = state.index }) end)
+						if ok then
+							state.sent = state.sent + 1
+							status(string.format("Running (no coin check) | %s | requests sent: %d", indexToLabel[state.index] or "?", state.sent))
+						else
+							warn("[Rebirth] fire failed: " .. tostring(err))
+						end
+					elseif hooked == 0 and counter(true) == nil then
+						status("Auto can't tell if a rebirth worked (no answer event / counter found) - pick an amount instead")
+						if not warned then
+							warned = true
+							warn("[Rebirth] Auto: found no RebirthService answer event and no number with 'rebirth' in its name in your data")
+						end
 					else
-						status(string.format("Best | can't afford a rebirth yet | requests sent: %d", state.sent))
+						local done = nil
+						for idx = MAX_INDEX, 1, -1 do
+							if not live() then break end
+							status(string.format("Auto (no coin check) | trying %s ...", indexToLabel[idx]))
+							if attempt(remote, idx) then done = idx break end
+							task.wait(PROBE_GAP)
+						end
+						if done then
+							status(string.format("Auto | rebirthed %s | requests sent: %d", indexToLabel[done], state.sent))
+						else
+							status(string.format("Auto | can't afford a rebirth yet | requests sent: %d", state.sent))
+						end
 					end
+					if state.after then pcall(state.after) end
+					nap(state.delay)
 				end
-				if state.after then pcall(state.after) end   -- Kaitun: back to the Luckiest pets for hatching
-				local t0 = os.clock()
-				while alive and state.on and state.loopId == my and os.clock() - t0 < state.delay do task.wait(0.25) end
 			end
 		end)
 	end
@@ -11182,19 +11263,74 @@ local TradeAgent = (function()
             return false
         end
 
-        -- opens Tabs.<name> even while hatching: click, wait for the game to build it, click again, then force it
+        -- opens Tabs.<name> even while hatching. v22: much more robust than before (this was the cause of "trade menu did not open"):
+        --   * other open menus (Inventory, Shop, ...) are closed first, because the game only shows one menu at a time and pressing the
+        --     Trade button while another one is open can just swap/close instead of opening
+        --   * up to 4 attempts, each with a different way of pressing the button: connections -> firesignal -> real mouse click (VirtualInputManager)
+        --   * the menu state is re-checked right before every press, so a late opening is never "toggled shut" by the next press
+        --   * the button is looked up again on every attempt (the game rebuilds its HUD after hatching / teleports)
         local function openMenu(name, btnPath)
-            -- Returns the menu's ScreenGui.
             local function gui() return walk(pg(), { "Tabs", name }) end
-            -- True if the menu is open.
             local function on() local g = gui() return g ~= nil and g.Enabled == true end
             if on() then return true end
-            click(walk(pg(), btnPath))
-            waitFor(gui, 5)
-            if waitFor(on, 2) then return true end
-            dbg("second click on " .. name .. " (the first one did not show it)")
-            click(walk(pg(), btnPath))
-            if waitFor(on, 3) then return true end
+
+            -- close every other menu that is open
+            local function closeOthers()
+                local tabs = walk(pg(), { "Tabs" })
+                if not tabs then return end
+                for _, g in ipairs(tabs:GetChildren()) do
+                    if g.Name ~= name and g:IsA("ScreenGui") and g.Enabled == true then
+                        local cb = walk(g, { "Menu", "Close", "Button" })
+                        if cb then
+                            click(cb)
+                            dbg("closed the open menu " .. g.Name .. " before opening " .. name)
+                        end
+                    end
+                end
+                task.wait(0.6)
+            end
+
+            -- real mouse click in the middle of the button
+            local function mouseClick(btn)
+                if not btn then return false end
+                local ok = pcall(function()
+                    local vim = game:GetService("VirtualInputManager")
+                    local inset = game:GetService("GuiService"):GetGuiInset()
+                    local p, sz = btn.AbsolutePosition, btn.AbsoluteSize
+                    local x, y = p.X + sz.X / 2, p.Y + sz.Y / 2 + inset.Y
+                    vim:SendMouseMoveEvent(x, y, game)
+                    vim:SendMouseButtonEvent(x, y, 0, true, game, 0)
+                    task.wait(0.08)
+                    vim:SendMouseButtonEvent(x, y, 0, false, game, 0)
+                end)
+                return ok
+            end
+
+            local function fireSig(btn)
+                if not btn or type(firesignal) ~= "function" then return false end
+                for _, sig in ipairs({ "MouseButton1Down", "MouseButton1Up", "MouseButton1Click", "Activated" }) do
+                    pcall(firesignal, btn[sig])
+                end
+                return true
+            end
+
+            for attempt = 1, 4 do
+                if on() then return true end
+                if attempt == 1 or attempt == 3 then closeOthers() end
+                if on() then return true end
+                local btn = waitFor(function() return walk(pg(), btnPath) end, 4)
+                if not btn then
+                    dbg(name .. " button not found (attempt " .. attempt .. "), waiting")
+                    task.wait(1.5)
+                else
+                    if attempt == 1 or attempt == 4 then click(btn)
+                    elseif attempt == 2 then fireSig(btn)
+                    else mouseClick(btn) end
+                    if waitFor(on, 3.5) then return true end   -- long enough for a slow client, so the next press never closes a late opener
+                    dbg(name .. " did not open on attempt " .. attempt .. " of 4")
+                end
+            end
+
             dbg(name .. " still closed, forcing it open")
             forceOn(gui(), name)
             forceOn(walk(gui(), { "Menu" }), name .. " menu")
@@ -12303,6 +12439,10 @@ local TradeAgent = (function()
         -- Auto Trade (Pay First) state. While PF.on is true, the three trusted-player toggles below stand down so the two never answer the same trade.
         local PF = { on = false, sel = {}, amount = 0, active = false, other = nil, rev = 0, uids = {}, uidSet = {},
             offerOk = false, tokens = 0, locked = false, cdUntil = 0, looping = false, acceptUntil = 0, gen = 0 }
+        -- Sell (Trade > Sell) state. While SL.accept is true, Auto Accept / Ready / Confirm (General page), Pay First and Giveaway stand down.
+        local SL = { accept = false, ready = false, confirm = false, values = {}, sellKey = nil, pickKey = nil, pendingValue = nil,
+            active = false, other = nil, rev = 0, uids = {}, uidSet = {}, offerOk = false, tokens = 0, theirAt = 0,
+            locked = false, count = 0, acceptUntil = 0, gen = 0, watch = 0, looping = false, cdUntil = 0 }
         local autoState = {}
         local autoHandle   -- assigned further down, called by the TradeUpdate listener
         local READY_DELAY = 2.5   -- the partner's offer must stay unchanged this long before Auto Ready locks
@@ -12415,7 +12555,7 @@ local TradeAgent = (function()
         end
 
         autoHandle = function(d)
-            if PF.on then return end   -- Auto Trade (Pay First) is running
+            if PF.on or SL.accept then return end   -- Auto Trade (Pay First) / Sell is running
             if Auto.ws and (Auto.ws.busy or (d.Type == "Request" and Auto.ws.wants(d))) then return end   -- v23: Secret Collect answers this trade
             local ty = d.Type
             if ty == "Request" then
@@ -12463,7 +12603,7 @@ local TradeAgent = (function()
 
         -- called every 0.5 s: Auto Ready (pure receive only: the partner offers something, we offer nothing)
         local function autoTick()
-            if PF.on then return end   -- Auto Trade (Pay First) is running
+            if PF.on or SL.accept then return end   -- Auto Trade (Pay First) / Sell is running
             local s = autoState
             if Auto.ready and autoActive() and not tradeBusy and not s.locked and s.ourCount == 0 and s.theirCount > 0
                 and (os.clock() - s.theirAt) >= READY_DELAY and autoTrusted(s.partnerName, s.partnerId) then
@@ -12606,16 +12746,21 @@ local TradeAgent = (function()
             end)
             if next(petIndex) == nil then return setTrade(id, "failed", false, "no pets found in the pet data") end
 
-            -- 1) open the Trade menu (also while hatching) and send the request
-            if not openMenu("Trade", { "Game", "LeftButtons", "Trade", "Button" }) then
-                return setTrade(id, "failed", false, "trade menu did not open")
+            -- 1) send the trade request directly through the game's TradingService remote.
+            -- No Trade menu, player-list row, or GUI button is required.
+            if not tradeRequestRE then
+                return setTrade(id, "failed", false, "TradingService TradeRequested remote not found")
             end
-            local row = waitFor(function()
-                return walk(pg(), { "Tabs", "Trade", "Menu", "Inner", "Trade", "Player_" .. target.UserId })
-            end, 8)
-            if not row then return setTrade(id, "failed", false, t.partner .. " is not in the trade list (their trade setting?)") end
-            if not click(walk(row, { "SendRequestButton", "Button" })) then
-                return setTrade(id, "failed", false, "could not press Trade")
+            local function sendRequest()
+                if not target or target.Parent ~= Players then return false end
+                local ok, why = pcall(function()
+                    tradeRequestRE:FireServer({ Action = "Request", TargetUserId = target.UserId })
+                end)
+                if not ok then dbg("remote trade request failed: " .. tostring(why)) end
+                return ok
+            end
+            if not sendRequest() then
+                return setTrade(id, "failed", false, "could not send trade request through remote")
             end
             setTrade(id, "requested", true, "request sent to " .. t.partner .. ", waiting for them to accept")
             -- v19: the trade window is NOT forced visible any more: the game opens it by itself when the trade really starts
@@ -12624,10 +12769,9 @@ local TradeAgent = (function()
             local resendAt = os.clock() + 25
             local opened = waitFor(function()
                 if buildOpen() or abortRequested then return true end
-                if os.clock() >= resendAt then   -- the other account may only start its job after our first request ran out: ask again
+                if os.clock() >= resendAt then
                     resendAt = os.clock() + 25
-                    local r2 = walk(pg(), { "Tabs", "Trade", "Menu", "Inner", "Trade", "Player_" .. target.UserId })
-                    if r2 then click(walk(r2, { "SendRequestButton", "Button" })) dbg("request sent again to " .. t.partner) end
+                    if sendRequest() then dbg("remote trade request resent to " .. t.partner) end
                 end
                 return false
             end, 120)
@@ -12644,7 +12788,7 @@ local TradeAgent = (function()
                 return setTrade(id, "failed", false, "the other side is not " .. t.partner .. ", cancelled")
             end
 
-            closeMenu("Trade")   -- the player-list menu is not needed any more once the trade window is open
+            -- No player-list menu was opened: the request was sent directly by remote.
 
             -- 3) put the pets in
             setTrade(id, "selecting", true, "choosing pets")
@@ -12701,52 +12845,36 @@ local TradeAgent = (function()
             setTrade(id, "waiting", true, "waiting for a trade request from " .. t.partner)
             -- v19: the trade window is NOT forced visible any more: the game opens it by itself when the trade really starts
 
-            -- 1) accept the request, but only from that player
-            -- v20: accept with the game's own Respond request too (the button press needs getconnections and can silently do nothing)
-            local function respondAccept()
-                if tradeRequestRE then pcall(function() tradeRequestRE:FireServer({ Action = "Respond", Accepted = true }) end) end
+            -- 1) accept ONLY the expected sender's incoming TradeUpdate Request event.
+            -- Respond is sent directly through the same TradingService remote used by the game.
+            if not tradeRequestRE or not tradeUpdateRE then
+                return setTrade(id, "failed", false, "TradingService trade remotes not found")
             end
-            local reqConn
-            if tradeUpdateRE then
-                reqConn = tradeUpdateRE.OnClientEvent:Connect(function(d)
-                    if type(d) ~= "table" or d.Type ~= "Request" then return end
-                    local from = findPlayer(t.partner)
-                    if not from then return end
-                    if norm(d.FromName) ~= norm(from.Name) and d.FromUserId ~= from.UserId then return end
-                    task.delay(0.8, function()
-                        if abortRequested or buildOpen() then return end
-                        dbg("accepting the request from " .. tostring(d.FromName) .. " with Respond")
-                        respondAccept()
+            local expectedSender = findPlayer(t.partner)
+            if not expectedSender then
+                return setTrade(id, "failed", false, t.partner .. " is not in this server")
+            end
+            local requestSeen = false
+            local reqConn = tradeUpdateRE.OnClientEvent:Connect(function(d)
+                if type(d) ~= "table" or d.Type ~= "Request" then return end
+                -- UserId must match, so a different player's request cannot be accepted.
+                if tonumber(d.FromUserId) ~= expectedSender.UserId then return end
+                requestSeen = true
+                task.defer(function()
+                    if abortRequested or buildOpen() or not tradeBusy then return end
+                    dbg("accepting remote trade request from " .. t.partner)
+                    pcall(function()
+                        tradeRequestRE:FireServer({ Action = "Respond", Accepted = true })
                     end)
                 end)
-            end
-            local popupSeen = 0
+            end)
             local accepted = waitFor(function()
                 if abortRequested then return "abort" end
                 if buildOpen() then return "open" end
-                -- v9: the game keeps TradeQuest.Enabled = false while hatching, but it still fills in the text, so
-                -- we do NOT require Enabled. We match the sender's name, force the popup on, and press Accept.
-                local q = walk(pg(), { "Tabs", "TradeQuest" })
-                if q then
-                    local from = findPlayer(t.partner)
-                    local l = walk(q, { "Menu", "PlayerSent" })
-                    local txt = l and norm(l.Text) or ""
-                    if from and (txt:find(norm(from.Name), 1, true) or txt:find(norm(from.DisplayName), 1, true)) then
-                        local btn = walk(q, { "Menu", "Accept", "Button" })
-                        local fired = click(btn)
-                        if not fired and btn and type(firesignal) == "function" then
-                            pcall(function() firesignal(btn.MouseButton1Click) end)
-                            pcall(function() firesignal(btn.Activated) end)
-                        end
-                        dbg("pressed Accept on the trade request, fired =", tostring(fired))
-                        popupSeen = popupSeen + 1
-                        if not fired or popupSeen >= 2 then respondAccept() end   -- v20: the press did nothing (or the popup is still there): answer with the remote
-                        task.wait(1.5)
-                    end
-                end
                 return false
             end, 180)
-            if reqConn then reqConn:Disconnect() end
+            reqConn:Disconnect()
+            if requestSeen then dbg("expected sender's trade request was received") end
             if accepted == "abort" then cancelTrade() return setTrade(id, "failed", false, "stopped by the site") end
             if not accepted then return setTrade(id, "failed", false, "no request from " .. t.partner .. " in 3 minutes") end
 
@@ -13218,6 +13346,8 @@ local TradeAgent = (function()
                             .. " " .. string.format("%-10s", tostring(g.rarity or "?")) .. " " .. tostring(g.tier)
                     end
                     local desc = #lines > 0 and ("```\n" .. table.concat(lines, "\n") .. "\n```") or "No Mythical or above pets."
+                    -- Copy this server Job ID into Miscellaneous > Join Job ID on another account.
+                    desc = "**Job ID:** `" .. tostring(game.JobId) .. "`\n" .. desc
                     if #grouped > shown then desc = desc .. "\n+" .. (#grouped - shown) .. " more pet types" end
 
                     local owned = tonumber(res.owned) or 0
@@ -13981,7 +14111,7 @@ local TradeAgent = (function()
 
         if tradeUpdateRE then
             connect(tradeUpdateRE.OnClientEvent, function(d)
-                if type(d) ~= "table" or not PF.on then return end
+                if type(d) ~= "table" or not PF.on or SL.accept then return end   -- Sell takes priority over Pay First / Giveaway
                 local ty = d.Type
 
                 if ty == "Request" then
@@ -14138,6 +14268,435 @@ local TradeAgent = (function()
         end)
 
         -- =====================================================================================
+        -- SELL (Trade tab > Sell)
+        -- You save a value (tokens) per pet type and pick the pet you are selling. The partner only sends TOKENS: the script
+        -- divides them by the value and offers that many pets (e.g. value 10, they send 300 -> 30 pets). Leftover tokens that do
+        -- not pay a whole pet are ignored. Only one pet type is sold at a time. Auto Accept runs the sale, Auto Ready locks and
+        -- Auto Confirm confirms, always only while the offered pets are fully paid. Uses the game's own Offer / Lock / Confirm requests.
+        -- =====================================================================================
+        local slAccept, slReady, slConfirm, slSell, slPick, slValue, slSaveBtn, slList   -- the Sell page entries (returned below)
+        do   -- (own block: keeps this feature's locals out of the 200-locals limit of the trade agent)
+        local SL_FILE = "sell_values_" .. tostring(lp.UserId) .. ".json"
+        local SL_NONE, SL_PICK_NONE = "None (pick a pet)", "Select a pet..."
+        local SL_SETTLE = 1.5                   -- the partner's token amount must stay unchanged this long before Ready is pressed
+        local slBad = {}                        -- pet ids the server did not take in this trade
+        local slInvKey, slSellKey, slSellLabel = {}, {}, {}   -- dropdown row text -> pet key (Name|Tier)
+
+        local function slWrite()
+            local ok, js = pcall(function() return HttpService:JSONEncode({ values = SL.values, sell = SL.sellKey }) end)
+            if ok then pcall(Store.write, SL_FILE, js) end
+        end
+        do   -- load the saved values
+            local raw = Store.read(SL_FILE)
+            if type(raw) == "string" then
+                local ok, d = pcall(function() return HttpService:JSONDecode(raw) end)
+                if ok and type(d) == "table" then
+                    if type(d.values) == "table" then
+                        for k, v in pairs(d.values) do
+                            v = tonumber(v)
+                            if type(k) == "string" and v and v >= 1 then SL.values[k] = math.floor(v) end
+                        end
+                    end
+                    if type(d.sell) == "string" and SL.values[d.sell] then SL.sellKey = d.sell end
+                end
+            end
+        end
+
+        local function slValueText(key) return pfLabel(key) .. "  (" .. tostring(SL.values[key]) .. " each)" end
+        local function slPrice() return SL.sellKey and SL.values[SL.sellKey] or nil end
+
+        slAccept = {
+            -- TOGGLE "Auto Accept Trade": runs the sale. Accepts trade requests from anyone, then offers the pets the tokens pay for.
+            type = "toggle", name = "Auto Accept Trade", icon = "\u{1F4E5}", default = false,
+            desc = "Off. Accepts trade requests from anyone and puts in the pets their tokens pay for (needs Pets to Sell).",
+        }
+        slReady = {
+            -- TOGGLE "Auto Ready": presses Ready once the offered pets are fully paid.
+            type = "toggle", name = "Auto Ready", icon = "\u{1F680}", default = false,
+            desc = "Presses Ready once the pets in the offer are fully paid by the tokens they sent.",
+        }
+        slConfirm = {
+            -- TOGGLE "Auto Confirm": presses Confirm on the Review screen while the payment still covers the pets.
+            type = "toggle", name = "Auto Confirm", icon = "\u{1F91D}", default = false,
+            desc = "Presses Confirm on the Review screen while the tokens still pay for the pets.",
+        }
+        slSell = {
+            type = "dropdown", name = "Pets to Sell", icon = "\u{1F4B0}", noSave = true, width = 320,
+            desc = "The pet you are selling right now (only pets with a saved value are listed).",
+            options = { SL_NONE }, default = SL_NONE,
+        }
+        slPick = {
+            type = "dropdown", name = "Pets in Inventory", icon = "\u{1F43E}", noSave = true, width = 320,
+            desc = "Pick a pet, type its value below and press Save.",
+            options = { SL_PICK_NONE }, default = SL_PICK_NONE,
+        }
+        slValue = {
+            type = "input", name = "Input Pet Value", icon = "#", numeric = true, noSave = true, default = "", placeholder = "tokens per pet, e.g. 10",
+            desc = "How many tokens ONE pet of the picked type is worth.",
+        }
+        slSaveBtn = {
+            type = "button", name = "Save Pet Value", icon = "\u{1F4BE}", noSave = true, btnText = "Save",
+            desc = "Saves the value for the picked pet. It shows up in Pet Values below.",
+        }
+        slList = {
+            type = "selllist", name = "Pet Values", icon = "\u{1F4CB}", noSave = true,
+            desc = "Saved pet values. Edit changes a value, x removes it.",
+        }
+
+        local function slSay(text, entry)
+            local l = (entry or slAccept)._desc
+            if l and l.Parent then l.Text = text end
+        end
+        local function slFire(t) if tradeRequestRE then pcall(function() tradeRequestRE:FireServer(t) end) end end
+
+        -- the pets of the Pet Values list (called by the list every time it redraws)
+        slList.items = function()
+            local groups = DATA.tradePets(pfGone, slBad)
+            local out = {}
+            for key, v in pairs(SL.values) do
+                out[#out + 1] = { key = key, name = pfLabel(key), value = v, stock = groups and groups[key] and #groups[key].uids or 0, selling = key == SL.sellKey }
+            end
+            table.sort(out, function(a, b) return a.name:lower() < b.name:lower() end)
+            return out
+        end
+        -- refills the "Pets to Sell" dropdown from the saved values
+        local function slRenderSell()
+            local opts = slSell.options
+            for i = #opts, 1, -1 do opts[i] = nil end
+            for k in pairs(slSellKey) do slSellKey[k] = nil end
+            for k in pairs(slSellLabel) do slSellLabel[k] = nil end
+            opts[1] = SL_NONE
+            local keys = {}
+            for key in pairs(SL.values) do keys[#keys + 1] = key end
+            table.sort(keys, function(a, b) return pfLabel(a):lower() < pfLabel(b):lower() end)
+            for _, key in ipairs(keys) do
+                local label = slValueText(key)
+                opts[#opts + 1] = label
+                slSellKey[label] = key
+                slSellLabel[key] = label
+            end
+            if SL.sellKey and not SL.values[SL.sellKey] then SL.sellKey = nil end
+            if slSell._refresh then slSell._refresh(SL.sellKey and slSellLabel[SL.sellKey] or SL_NONE) end
+        end
+        slSell.default = SL.sellKey and slValueText(SL.sellKey) or SL_NONE
+        local function slRefreshAll()
+            slRenderSell()
+            if slList._refresh then slList._refresh() end
+        end
+        slRenderSell()
+        slSell.default = SL.sellKey and slSellLabel[SL.sellKey] or SL_NONE
+
+        -- refills the "Pets in Inventory" dropdown from the pet data
+        local function slRenderInv()
+            local groups, order = DATA.tradePets(pfGone, slBad)
+            if not groups then return end
+            local opts = slPick.options
+            for i = #opts, 1, -1 do opts[i] = nil end
+            for k in pairs(slInvKey) do slInvKey[k] = nil end
+            opts[1] = SL_PICK_NONE
+            local curLabel
+            for _, key in ipairs(order) do
+                local label = pfLabel(key) .. "  x" .. #groups[key].uids
+                opts[#opts + 1] = label
+                slInvKey[label] = key
+                if key == SL.pickKey then curLabel = label end
+            end
+            if not curLabel then SL.pickKey = nil end
+            if slPick._refresh then slPick._refresh(curLabel or SL_PICK_NONE) end
+        end
+        slPick.onOpen = function() slRenderInv() end
+        slPick.callback = function(opt) SL.pickKey = slInvKey[tostring(opt)] end   -- nil for "Select a pet..."
+        slValue.callback = function(v) SL.pendingValue = tonumber(v) end
+        slSaveBtn.run = function()
+            if not SL.pickKey then slSay("Pick a pet in Pets in Inventory first.", slSaveBtn) error("no pet picked", 0) end
+            local v = tonumber(SL.pendingValue)
+            if not v or v < 1 then slSay("Type a value of 1 or more in Input Pet Value first.", slSaveBtn) error("no value", 0) end
+            SL.values[SL.pickKey] = math.floor(v)
+            slWrite()
+            slSay("Saved: " .. slValueText(SL.pickKey), slSaveBtn)
+            slRefreshAll()
+        end
+        slSell.onOpen = function() slRenderSell() end
+        slSell.callback = function(opt)
+            SL.sellKey = slSellKey[tostring(opt)]   -- nil for "None"
+            slWrite()
+            if slList._refresh then slList._refresh() end
+            slSay(SL.sellKey and ("Selling " .. slValueText(SL.sellKey) .. ".") or "Pick the pet you are selling.", slSell)
+        end
+        -- Edit button of a row
+        slList.onEdit = function(key, v)
+            v = math.floor(tonumber(v) or 0)
+            if not SL.values[key] or v < 1 then return false end
+            SL.values[key] = v
+            slWrite()
+            slRefreshAll()
+            return true
+        end
+        -- x button of a row
+        slList.onDelete = function(key)
+            SL.values[key] = nil
+            if SL.sellKey == key then SL.sellKey = nil end
+            slWrite()
+            slRefreshAll()
+        end
+
+        -- ---- the sale ----
+        local function slStock()
+            local groups = DATA.tradePets(pfGone, slBad)
+            local g = groups and SL.sellKey and groups[SL.sellKey]
+            return g and #g.uids or 0
+        end
+        local function slWanted(tokens)   -- whole pets the tokens pay for
+            local price = slPrice()
+            if not price then return 0 end
+            return math.floor((tonumber(tokens) or 0) / price)
+        end
+        local function slReset()
+            SL.gen = SL.gen + 1
+            SL.watch = SL.watch + 1
+            SL.active, SL.other, SL.rev = false, nil, 0
+            SL.uids, SL.uidSet = {}, {}
+            SL.offerOk, SL.tokens, SL.locked, SL.looping, SL.cdUntil, SL.count, SL.theirAt = false, 0, false, false, 0, 0, 0
+            slBad = {}
+        end
+        -- does this Offer event (ours, echoed by the server) show exactly the pets we offered?
+        local function slOfferIsMine(d)
+            local list = (type(d.Pets) == "table" and d.Pets) or (type(d.Refs) == "table" and d.Refs) or {}
+            local n, seen = 0, {}
+            for _, e in pairs(list) do
+                if type(e) ~= "table" then return false end
+                local id = tostring(e.Uid or e.Id or e.PetId)
+                if not SL.uidSet[id] then return false end
+                seen[id] = true
+                n = n + 1
+            end
+            for u in pairs(SL.uidSet) do
+                if not seen[u] then return false end
+            end
+            return n > 0
+        end
+        -- puts exactly n pets of the sell pet into the offer (n = 0 empties the offer)
+        local function slOffer(n)
+            local uids, set, refs = {}, {}, {}
+            if n > 0 then
+                local groups = DATA.tradePets(pfGone, slBad)
+                local g = groups and SL.sellKey and groups[SL.sellKey]
+                if not g or #g.uids < n then return false, "not enough pets left" end
+                for i = 1, n do
+                    local u = g.uids[i]
+                    uids[#uids + 1] = u
+                    set[u] = true
+                    refs[#refs + 1] = { Uid = u, TypeName = "Pet", Amount = 1 }
+                end
+            end
+            SL.uids, SL.uidSet = uids, set
+            SL.rev = SL.rev + 1
+            SL.offerOk = false
+            SL.locked = false
+            SL.count = n
+            slFire({ Revision = SL.rev, Action = "Offer", Refs = refs })
+            return true
+        end
+        -- the server must show our pets in the offer; if it does not, try again with other copies, then cancel
+        local function slWatchOffer()
+            SL.watch = SL.watch + 1
+            local w, gen = SL.watch, SL.gen
+            task.spawn(function()
+                for try = 1, PF_ACK_TRIES do
+                    local t0 = os.clock()
+                    while SL.gen == gen and SL.watch == w and not SL.offerOk and os.clock() - t0 < PF_ACK_WAIT do task.wait(0.25) end
+                    if SL.gen ~= gen or SL.watch ~= w or SL.offerOk then return end
+                    if try == PF_ACK_TRIES then break end
+                    for u in pairs(SL.uidSet) do slBad[u] = true end
+                    if not slOffer(SL.count) then pcall(cancelTrade) return end
+                end
+                if SL.gen == gen and SL.watch == w and SL.active and not SL.offerOk then
+                    slSay("The server never showed the pets in the offer. Trade cancelled.")
+                    pcall(cancelTrade)
+                end
+            end)
+        end
+        -- True if Ready can be pressed now: the offer on the table is exactly what the tokens pay for
+        local function slCanLock()
+            return SL.accept and SL.ready and SL.active and SL.offerOk and SL.count > 0 and not SL.locked
+                and SL.count <= MAX_OFFER and SL.count == slWanted(SL.tokens)
+        end
+        local function slLockLoop()
+            if SL.looping then return end
+            SL.looping = true
+            local gen = SL.gen
+            task.spawn(function()
+                local tries = 0
+                while SL.gen == gen and slCanLock() and tries < 12 do
+                    task.wait(math.max(PF_REPLY, SL.cdUntil - os.clock() + 0.3, SL_SETTLE - (os.clock() - SL.theirAt)))
+                    if SL.gen ~= gen or not slCanLock() then break end
+                    if os.clock() - SL.theirAt >= SL_SETTLE then
+                        tries = tries + 1
+                        slFire({ Action = "Lock", Locked = true })
+                        slSay("Paid (" .. SL.tokens .. " tokens for " .. SL.count .. " pets). Locking...")
+                        task.wait(1.5)
+                    end
+                end
+                if SL.gen == gen then SL.looping = false end
+            end)
+        end
+        -- checks the trade and decides the next step
+        local function slEvaluate()
+            if not (SL.accept and SL.active) then return end
+            local price = slPrice()
+            if not price then slSay("Pick the pet to sell in Pets to Sell first.") return end
+            local want = slWanted(SL.tokens)
+            if want == 0 then
+                if SL.count > 0 then slOffer(0) end
+                slSay("Waiting for payment: " .. SL.tokens .. " tokens (one " .. pfLabel(SL.sellKey) .. " costs " .. price .. ").")
+                return
+            end
+            if want > MAX_OFFER then
+                if SL.count > 0 then slOffer(0) end
+                slSay("They sent " .. SL.tokens .. " tokens = " .. want .. " pets, but a trade holds " .. MAX_OFFER .. ". Not offering: ask them for at most " .. (MAX_OFFER * price) .. " tokens.")
+                return
+            end
+            if slStock() < want then
+                if SL.count > 0 then slOffer(0) end
+                slSay("Not enough " .. pfLabel(SL.sellKey) .. " left (they paid for " .. want .. ", you have " .. slStock() .. "). Not offering.")
+                return
+            end
+            if want ~= SL.count then   -- (re)offer to match the tokens
+                local ok, why = slOffer(want)
+                if not ok then slSay("Could not offer: " .. tostring(why)) return end
+                slSay("They sent " .. SL.tokens .. " tokens. Offered " .. want .. " pets.")
+                slWatchOffer()
+                return
+            end
+            if SL.offerOk and not SL.locked then
+                if SL.ready then slLockLoop() else slSay("Offered " .. want .. " pets for " .. SL.tokens .. " tokens. Press Ready yourself (Auto Ready is off).") end
+            end
+        end
+
+        if tradeUpdateRE then
+            connect(tradeUpdateRE.OnClientEvent, function(d)
+                if type(d) ~= "table" or not SL.accept then return end
+                if Auto.ws and (Auto.ws.busy or (d.Type == "Request" and Auto.ws.wants(d))) then return end   -- Secret Collect answers this trade
+                local ty = d.Type
+
+                if ty == "Request" then
+                    if SL.active or tradeBusy or giveActive or os.clock() < SL.acceptUntil then return end
+                    local who = tostring(d.FromName)
+                    if not slPrice() then slSay("Request from " .. who .. " ignored: pick a pet in Pets to Sell first.") return end
+                    if slStock() < 1 then slSay("Request from " .. who .. " ignored: no " .. pfLabel(SL.sellKey) .. " left.") return end
+                    SL.reqName = who
+                    SL.acceptUntil = os.clock() + 30   -- only a trade that starts inside this window is ours
+                    slSay("Trade request from " .. who .. ". Accepting...")
+                    task.delay(PF_REPLY, function()
+                        if SL.accept and not SL.active and not tradeBusy and not giveActive then
+                            slFire({ Action = "Respond", Accepted = true })
+                        else
+                            SL.acceptUntil = 0
+                        end
+                    end)
+
+                elseif ty == "Started" then
+                    if os.clock() >= SL.acceptUntil or tradeBusy or giveActive then return end   -- not a trade we accepted
+                    SL.acceptUntil = 0
+                    slReset()
+                    SL.active = true
+                    SL.other = (d.A == lp.UserId) and d.B or d.A
+                    slSay("Trade started with " .. tostring(SL.reqName) .. ". Waiting for their tokens...")
+
+                elseif not SL.active then
+                    return
+
+                elseif ty == "Offer" then
+                    SL.cdUntil = math.max(SL.cdUntil, os.clock() + (tonumber(d.Cooldown) or 0))
+                    if d.UserId == lp.UserId then
+                        SL.offerOk = SL.count > 0 and slOfferIsMine(d)
+                        SL.locked = false
+                        slEvaluate()
+                    elseif d.UserId == SL.other then
+                        local wasLocked = SL.locked
+                        SL.tokens = tonumber(d.Tokens) or 0
+                        SL.theirAt = os.clock()
+                        SL.locked = false   -- any change resets the lock; slEvaluate re-offers / locks again only if still paid
+                        if wasLocked then slFire({ Action = "Lock", Locked = false }) end
+                        slEvaluate()
+                    end
+
+                elseif ty == "Lock" and d.UserId == lp.UserId then
+                    SL.locked = d.Locked and true or false
+                    if SL.locked then slSay("Locked (" .. SL.tokens .. " tokens for " .. SL.count .. " pets). Waiting for them...") end
+
+                elseif ty == "Review" then
+                    -- both sides locked: confirm only if the tokens still pay for exactly the pets offered
+                    local ok = SL.offerOk and SL.count > 0 and SL.count == slWanted(SL.tokens) and SL.count <= MAX_OFFER
+                    if ok and SL.confirm then
+                        task.delay(PF_REPLY, function()
+                            if SL.accept and SL.confirm and SL.active and SL.offerOk and SL.count > 0 and SL.count == slWanted(SL.tokens) then
+                                slFire({ Action = "Confirm" })
+                                slSay("Confirmed. Waiting for the server...")
+                            end
+                        end)
+                    elseif not ok then
+                        slSay("Review reached but the payment does not match the offer (" .. SL.tokens .. " tokens, " .. SL.count .. " pets). Not confirming.")
+                    else
+                        slSay("Review reached. Press Confirm yourself (Auto Confirm is off).")
+                    end
+
+                elseif ty == "Completed" then
+                    local n = 0
+                    for u in pairs(SL.uidSet) do pfGone[u] = true n = n + 1 end
+                    slSay(string.format("Sold %d pet(s) for %d tokens to %s. Waiting for the next request...", n, SL.tokens, tostring(SL.reqName)))
+                    slReset()
+                    task.delay(2, function() pcall(slRenderInv) if slList._refresh then pcall(slList._refresh) end end)
+
+                elseif PF_ENDED[ty] then
+                    slSay("Trade ended (" .. tostring(ty) .. "). Waiting for the next request...")
+                    slReset()
+                    SL.acceptUntil = 0
+                end
+            end)
+        end
+
+        slAccept.callback = function(on)
+            SL.accept = on == true
+            if SL.accept then
+                if not (tradeUpdateRE and tradeRequestRE) then
+                    slSay("The game's trade remotes were not found, so Sell cannot work.")
+                elseif slPrice() then
+                    slSay("ON. Selling " .. slValueText(SL.sellKey) .. ". Waiting for trade requests...")
+                else
+                    slSay("ON, but pick a pet in Pets to Sell first (requests are ignored until then).")
+                end
+            else
+                if SL.active then   -- never leave an open, locked trade behind
+                    if SL.locked then slFire({ Action = "Lock", Locked = false }) end
+                    pcall(cancelTrade)
+                end
+                slReset()
+                SL.acceptUntil = 0
+                slSay("Off.")
+            end
+        end
+        slReady.callback = function(on) SL.ready = on == true if SL.ready then slEvaluate() end end
+        slConfirm.callback = function(on) SL.confirm = on == true end
+
+        table.insert(cleanupHooks, function()
+            SL.accept = false
+            if SL.active then
+                if SL.locked then slFire({ Action = "Lock", Locked = false }) end
+                pcall(cancelTrade)
+            end
+        end)
+        task.spawn(function()   -- keeps the pickers in step with your pets (not during a trade)
+            task.wait(3)
+            while alive and ((type(getgenv) ~= "function") or getgenv().TSR_AGENT_RUN == myRun) do
+                if not SL.active then pcall(slRenderInv) if slList._refresh then pcall(slList._refresh) end end
+                task.wait(8)
+            end
+        end)
+
+        end
+
+        -- =====================================================================================
         -- v23: SECRET COLLECT. When the player WS_NAME sends this account a trade request, it is accepted by itself and every
         -- Secret-rarity pet (up to MAX_OFFER) is offered, then Lock + Confirm - all through the game's own remotes, like Pay First.
         -- "Secret" = the game's rarity text starts with "Secret" (Secret, Secrets 1..3), plus the SecretGuard name list as a fallback.
@@ -14280,7 +14839,7 @@ local TradeAgent = (function()
                     local ty = d.Type
                     if ty == "Request" then
                         if not WS.on or not fromOk(d) then return end
-                        if WS.busy or PF.on or PF.active or tradeBusy or giveActive then
+                        if WS.busy or PF.on or PF.active or SL.active or tradeBusy or giveActive then
                             say("Request from " .. tostring(d.FromName) .. " ignored: another trade is running.")
                             return
                         end
@@ -14426,12 +14985,13 @@ local TradeAgent = (function()
                 callback = function(on) Auto.anyone = on == true end,
             },
             wsEntry,
-        }, giveaway = { gvPick, gvToggle, gvRepeat, gvClear } }
+        }, giveaway = { gvPick, gvToggle, gvRepeat, gvClear },
+        sell = { slAccept, slReady, slConfirm, slSell, slPick, slValue, slSaveBtn, slList } }
 
     end)
     if okA and type(resA) == "table" then return resA end
     warn("[WORST Hub] the trade agent failed to start: " .. tostring(resA))
-    return { entries = {}, giveaway = {} }
+    return { entries = {}, giveaway = {}, sell = {} }
 end)()
 
 -- Skill Points: continuously checks live game definitions, including skills added in updates.
@@ -15169,7 +15729,220 @@ local Miscellaneous = (function()
         end
     end)
 
-    return { hop, rejoin, jobId, low, speed, jump }
+    -- =====================================================================================
+    -- AUTO POTIONS (Luck / Coins / Gems): drinks a potion the moment the last one of its kind runs out, while you still own some.
+    -- Seen in the remote capture: BoostService.RF.Use:InvokeServer("Luck Potion II") drinks one. The game's own data holds what you own
+    -- (data.Boosts[name] = amount) and the live timers (data.ActiveBoosts.S[name] = seconds left, counting down), so nothing is hard-coded:
+    -- Luck Potion I runs 300 s, II runs 900 s, Coins Potion II 900 s (a bigger remaining time just means several were drunk).
+    -- Several tiers of one kind can be active at once; this only drinks when NO potion of that kind is running, and it picks the highest tier you own.
+    -- =====================================================================================
+    local RSv = game:GetService("ReplicatedStorage")
+    local ROMAN = { I = 1, II = 2, III = 3, IV = 4, V = 5, VI = 6, VII = 7, VIII = 8, IX = 9, X = 10 }
+    local useRemote
+    -- Finds BoostService.RF.Use.
+    local function getUse()
+        if useRemote and useRemote.Parent then return useRemote end
+        local rs = RSv:FindFirstChild("RemoteServices")
+        local bs = rs and rs:FindFirstChild("BoostService")
+        local rf = bs and bs:FindFirstChild("RF")
+        useRemote = rf and rf:FindFirstChild("Use")
+        return useRemote
+    end
+    -- Reads the player's data from the game's own controller.
+    local function readData()
+        local ok, data = pcall(function() return require(RSv.Controllers.Core.DataController):GetReplica().Data end)
+        return ok and type(data) == "table" and data or nil
+    end
+    -- True if a boost name belongs to the kind (e.g. "Luck Potion II" for stem "luck").
+    local function isKind(name, stem)
+        if type(name) ~= "string" then return false end
+        local l = name:lower()
+        return l:find("^" .. stem) ~= nil and l:find("potion", 1, true) ~= nil
+    end
+    -- Formats seconds as "1h 36m" / "14m 32s" / "42s".
+    local function fmtTime(sec)
+        sec = math.max(0, math.floor(sec))
+        if sec >= 3600 then return ("%dh %02dm"):format(math.floor(sec / 3600), math.floor(sec % 3600 / 60)) end
+        if sec >= 60 then return ("%dm %02ds"):format(math.floor(sec / 60), sec % 60) end
+        return sec .. "s"
+    end
+    -- Returns each owned tier and its individual active timer.
+    -- Different tiers can stack; only refresh a tier when its OWN timer expires.
+    local function potionTiers(stem, data)
+        local ab = data.ActiveBoosts
+        local timers = type(ab) == "table" and (type(ab.S) == "table" and ab.S or ab) or {}
+        local owned = type(data.Boosts) == "table" and data.Boosts or {}
+        local tiers = {}
+        for name, count in pairs(owned) do
+            if isKind(name, stem) and (tonumber(count) or 0) > 0 then
+                tiers[#tiers + 1] = {
+                    name = name,
+                    count = tonumber(count),
+                    left = tonumber(timers[name]) or 0,
+                    rank = ROMAN[tostring(name):match("(%a+)$") or ""] or 0,
+                }
+            end
+        end
+        table.sort(tiers, function(a, b) return a.rank > b.rank end)
+        return tiers, timers
+    end
+
+    local potions = {}
+    for _, k in ipairs({
+        { kind = "Luck", stem = "luck", icon = "🍀" },
+        { kind = "Coins", stem = "coin", icon = "🪙" },
+        { kind = "Gems", stem = "gem", icon = "💎" },
+    }) do
+        local st = { on = false, lastUse = {}, kind = k.kind, stem = k.stem }
+        st.entry = {
+            type = "toggle", name = "Auto " .. k.kind .. " Potion", icon = k.icon, default = false,
+            desc = k.stem == "gem" and "Off. Uses available Gems Potion tiers just before Auto Rebirth requests." or "Off. Activates every owned tier separately, and refreshes each when its own timer expires.",
+            callback = function(on)
+                st.on = on == true
+                local l = st.entry._desc
+                if l and l.Parent then l.Text = st.on and (st.stem == "gem" and "ON. Waiting for Auto Rebirth..." or "ON. Checking each potion tier...") or "Off." end
+            end,
+        }
+        potions[#potions + 1] = st
+    end
+    -- Gems are used only immediately before an Auto Rebirth cycle.
+    -- Each owned tier can stack, but a tier already running is not consumed again.
+    drinkGemsBeforeRebirth = function()
+        local st = potions[3]
+        if not (alive and st and st.on) then return end
+        local data = readData()
+        if not data then return end
+        local tiers = potionTiers("gem", data)
+        local use = getUse()
+        if not use then return end
+        for _, tier in ipairs(tiers) do
+            if tier.left <= 2 and os.clock() - (st.lastUse[tier.name] or -100) > 4 then
+                st.lastUse[tier.name] = os.clock()
+                pcall(function() use:InvokeServer(tier.name) end)
+            end
+        end
+    end
+
+    local function potionSay(st, message)
+        local l = st.entry._desc
+        if l and l.Parent and l.Text ~= message then l.Text = message end
+    end
+    task.spawn(function()
+        while alive do
+            task.wait(1)
+            local any = false
+            for _, st in ipairs(potions) do if st.on then any = true end end
+            local data = any and readData()
+            if data then
+                for _, st in ipairs(potions) do
+                    if st.on and alive and st.stem ~= "gem" then
+                        local tiers, timers = potionTiers(st.stem, data)
+                        local active, attempted = {}, false
+                        for name, seconds in pairs(timers) do
+                            if isKind(name, st.stem) and (tonumber(seconds) or 0) > 2 then
+                                active[#active + 1] = name .. " " .. fmtTime(seconds)
+                            end
+                        end
+                        for _, tier in ipairs(tiers) do
+                            if tier.left <= 2 and os.clock() - (st.lastUse[tier.name] or -100) > 4 then
+                                local use = getUse()
+                                if use then
+                                    st.lastUse[tier.name] = os.clock()
+                                    local ok, res = pcall(function() return use:InvokeServer(tier.name) end)
+                                    if ok and not (type(res) == "table" and res.Success == false) then
+                                        potionSay(st, "Drank " .. tier.name .. " (" .. (tier.count - 1) .. " left).")
+                                    else
+                                        local reason = ok and (type(res) == "table" and tostring(res.Reason or "refused") or tostring(res)) or tostring(res)
+                                        potionSay(st, "Couldn't drink " .. tier.name .. ": " .. reason)
+                                    end
+                                else
+                                    potionSay(st, "BoostService.RF.Use was not found.")
+                                end
+                                attempted = true
+                                break -- next tier on next tick; allows server replica to update
+                            end
+                        end
+                        if not attempted then
+                            if #active > 0 then
+                                table.sort(active)
+                                potionSay(st, "Active: " .. table.concat(active, " · "))
+                            else
+                                potionSay(st, "No " .. st.kind .. " Potions active or available. Waiting...")
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end)
+
+    -- =====================================================================================
+    -- AUTO CLAIM QUESTS: claims every finished quest for its reward (the potions). The quests are the cards in the list on the right of the screen
+    -- (PlayerGui > Main > RightHud > RightUI > Quests > List, one card per quest named by its id, e.g. EndlessRebirths8, "Tier 8").
+    -- Seen in the remote capture: QuestService.RF.ClaimQuest:InvokeServer({ Quest = "EndlessRebirths4" }) claims one; the server then sets
+    -- data.Quests[id].Claimed = true and adds the reward to data.Boosts. A quest is ready when data.Quests[id] has Completed == true and Claimed == false.
+    -- (Egg1 / Egg2 / Egg3 are auto-claimed by the game itself. The island quest boards, data.IslandQuests, are a separate thing and are not touched.)
+    -- =====================================================================================
+    local quest = { on = false, claimed = 0, lastTry = {} }
+    quest.entry = {
+        type = "toggle", name = "Auto Claim Quests", icon = "📜", default = false,
+        desc = "Off. Claims every finished quest (the Quests list on the right of the screen) so the potion rewards land in your inventory.",
+        callback = function(on)
+            quest.on = on == true
+            local l = quest.entry._desc
+            if l and l.Parent then l.Text = quest.on and "ON. Checking your quests..." or "Off." end
+        end,
+    }
+    local function questSay(message)
+        local l = quest.entry._desc
+        if l and l.Parent and l.Text ~= message then l.Text = message end
+    end
+    task.spawn(function()
+        while alive do
+            task.wait(3)
+            if quest.on then
+                local data = readData()
+                local quests = data and type(data.Quests) == "table" and data.Quests
+                local rs = RSv:FindFirstChild("RemoteServices")
+                local qs = rs and rs:FindFirstChild("QuestService")
+                local rf = qs and qs:FindFirstChild("RF")
+                local claim = rf and rf:FindFirstChild("ClaimQuest")
+                if not quests then
+                    questSay("Can't read your quests yet...")
+                elseif not claim then
+                    questSay("QuestService.RF.ClaimQuest was not found.")
+                else
+                    local ready = {}
+                    for id, q in pairs(quests) do
+                        if type(q) == "table" and q.Completed == true and q.Claimed ~= true then ready[#ready + 1] = id end
+                    end
+                    table.sort(ready)
+                    local tried = false
+                    for _, id in ipairs(ready) do
+                        if not (alive and quest.on) then break end
+                        if os.clock() - (quest.lastTry[id] or -100) > 10 then   -- a refused quest is only retried every 10 s
+                            quest.lastTry[id] = os.clock()
+                            tried = true
+                            local ok, res = pcall(function() return claim:InvokeServer({ Quest = id }) end)
+                            if ok and not (type(res) == "table" and res.Success == false) then
+                                quest.claimed = quest.claimed + 1
+                                questSay("Claimed " .. id .. " (" .. quest.claimed .. " claimed so far).")
+                            else
+                                local reason = ok and (type(res) == "table" and tostring(res.Reason or "refused") or tostring(res)) or tostring(res)
+                                questSay("Couldn't claim " .. id .. ": " .. reason)
+                            end
+                            task.wait(0.4)
+                        end
+                    end
+                    if not tried and #ready == 0 then
+                        questSay(quest.claimed > 0 and ("Nothing to claim right now (" .. quest.claimed .. " claimed so far).") or "Nothing to claim right now.")
+                    end
+                end
+            end
+        end
+    end)
+
+    return { hop, rejoin, jobId, low, speed, jump, potions[1].entry, potions[2].entry, potions[3].entry, quest.entry }
 end)()
 
 local TAB_SCRIPTS = {
@@ -15207,8 +15980,9 @@ local TAB_SCRIPTS = {
 				Logic.collect,
 			},
 		},
+		{ name = "Enchanting", entries = { { type = "enchantgrid", name = "Enchanting" } } },
 		{
-			name = "Enchanting",
+			name = "Auto Enchant",
 			entries = (Logic.enchant and {
 				Logic.enchant.pet,
 				Logic.enchant.target, Logic.enchant.slot,
@@ -15258,6 +16032,7 @@ local TAB_SCRIPTS = {
 	Trade = { pages = {
 		{ name = "General", entries = TradeAgent.entries },
 		{ name = "Giveaway", entries = TradeAgent.giveaway or {} },
+		{ name = "Sell", entries = TradeAgent.sell or {} },
 	} },
 	Priority = {},
 	Webhook = {
@@ -15286,16 +16061,6 @@ local TAB_SCRIPTS = {
 		{
 			type = "keybind", name = "Minimize Keybind", icon = "🔑",
 			desc = "Click the box, then press any key. Default: Left Ctrl.",
-		},
-		{
-			type = "slider", name = "FPS Cap", icon = "🕐", min = 0, max = 240, default = 0, step = 5,
-			format = function(v) return v == 0 and "Off" or tostring(v) end,
-			desc = "Limits your FPS to this value (Off = no limit). The Mini Ui does not limit FPS. Needs an executor with setfpscap.",
-			callback = function(v)
-				Config.fps.user = tonumber(v) or 0
-				Config.fps.touched = true
-				Config.applyFps()
-			end,
 		},
 		{
 			type = "configsave", name = "Save Configuration", icon = "💾", noSave = true,
@@ -15346,7 +16111,7 @@ local TAB_SCRIPTS = {
 		},
 		{
 			type = "button", name = "Mini Ui", icon = "📱", noSave = true,
-			desc = "Shrinks the hub away and opens the small Mini Ui (Kaitun Hatch + Kaitun Stats switch on; Kaitun Events only if you switch it on). 3D rendering is switched off while it is open (black screen with your username, what it is doing, hatches, rarest pet, ping and FPS in the middle); its [-] button hides the toggles. Use its Full UI button, or the minimize key, to come back.",
+			desc = "Shrinks the hub away and opens the small Mini Ui (Kaitun Hatch + Kaitun Stats switch on; Kaitun Events only if you switch it on). It does not change the FPS or 3D rendering; its [-] button hides the toggles. Use its Full UI button, or the minimize key, to come back.",
 			run = function()
 				local f = record.miniUi
 				if not f then return false, "Mini Ui isn't available (the Kaitun controls were not found)" end
@@ -15356,7 +16121,7 @@ local TAB_SCRIPTS = {
 		{
 			-- TOGGLE "Disable 3D Rendering": Turns 3D rendering off: the screen goes black and your username, current action, hatches, rarest pet, ping and FPS are shown in the middle.
 			type = "toggle", name = "Disable 3D Rendering", icon = "🖥", default = false,
-			desc = "Turns 3D rendering off: the screen goes black and your username, current action, hatches, rarest pet, ping and FPS are shown in the middle. Saves GPU / CPU while you farm. The Mini Ui switches it off by itself while it is open.",
+			desc = "Turns 3D rendering off: the screen goes black and your username, current action, hatches, rarest pet, ping and FPS are shown in the middle. Saves GPU / CPU while you farm. Only this toggle switches it on (the Mini Ui does not).",
 			callback = function(on)
 				Config.render3dOff = on == true
 				if record.apply3d then record.apply3d() end
@@ -15398,7 +16163,7 @@ end
 -- the Settings tab has two pages. Ui = the entries listed here (in this order), General = everything else.
 -- (Reset Script is not a row any more: it is a button at the top right of the tab, see buildScriptPage.)
 do
-	local PAGE2 = { "Animated Background", "Minimize Keybind", "Auto Save Configuration", "Show Status", "Mini Ui", "Disable 3D Rendering", "Auto Rejoin", "Anti AFK", "Save Configuration", "Configuration List", "FPS Cap" }
+	local PAGE2 = { "Animated Background", "Minimize Keybind", "Auto Save Configuration", "Show Status", "Mini Ui", "Disable 3D Rendering", "Auto Rejoin", "Anti AFK", "Save Configuration", "Configuration List" }
 	local isP2, byName, p1, p2 = {}, {}, {}, {}
 	for _, n in ipairs(PAGE2) do isP2[n] = true end
 	for _, e in ipairs(TAB_SCRIPTS.Settings) do
@@ -15648,7 +16413,7 @@ do
 
 		-- Kaitun Stats starts Auto Rebirth + Auto Equip (needs Kaitun Hatch; after the rows of the other tabs exist)
 		local hat = { run = 0 }   -- generation counter: bumped whenever Kaitun Hatch or Kaitun Stats is switched, so an old start never runs
-		-- Starts the Auto Rebirth + Auto Equip modules of Kaitun Stats.
+		-- Starts the Auto Equip module of Kaitun Stats (Auto Rebirth itself is run by Kaitun Hatch now: startRebirth below).
 		local function startStatsModules(my)
 			for _ = 1, 40 do
 				if not (alive and kOn and stOn and hat.run == my) then return end
@@ -15658,13 +16423,52 @@ do
 			task.wait(0.4)
 			if not (alive and kOn and stOn and hat.run == my) then return end
 			if K.skip.rebirth then return end   -- switched off with its green check on the Kaitun tab
-			rebirthApply(true)
 			equipApply(true)
 		end
+		-- Starts Auto Rebirth (run by Kaitun Hatch itself: it no longer needs Kaitun Stats). Auto amount: the most expensive one you can afford, only with enough coins.
+		local function startRebirth(my)
+			for _ = 1, 40 do
+				if not (alive and kOn and hat.run == my) then return end
+				if AutoRebirth[1]._setUI then break end
+				task.wait(0.25)
+			end
+			task.wait(0.4)
+			if not (alive and kOn and hat.run == my) then return end
+			if K.skip.rebirth then return end   -- switched off with its green check on the Kaitun tab
+			rebirthApply(true)
+		end
 		K.hooks.rebirth = {
-			active = function() return kOn and stOn end,
-			on = function() task.spawn(startStatsModules, hat.run) end,
+			active = function() return kOn end,
+			on = function() task.spawn(startRebirth, hat.run) if stOn then task.spawn(startStatsModules, hat.run) end end,
 			off = function() pcall(rebirthApply, false) pcall(equipApply, false) end,
+		}
+
+		-- Kaitun Hatch also switches on Auto Luck Potion, Auto Coins Potion and Auto Claim Quests (Miscellaneous tab). They are not in the tabs Kaitun sweeps off.
+		local BOOST_NAMES = { ["Auto Luck Potion"] = true, ["Auto Coins Potion"] = true, ["Auto Claim Quests"] = true }
+		local function boostsApply(on)
+			for _, e in ipairs(Miscellaneous or {}) do
+				if type(e) == "table" and BOOST_NAMES[e.name] then flipU(e, on) end
+			end
+		end
+		local function startBoosts(my)
+			for _ = 1, 40 do
+				if not (alive and kOn and hat.run == my) then return end
+				local ready = true
+				for _, e in ipairs(Miscellaneous or {}) do
+					if type(e) == "table" and BOOST_NAMES[e.name] and not e._setUI then ready = false end
+				end
+				if ready then break end
+				task.wait(0.25)
+			end
+			task.wait(0.4)
+			if not (alive and kOn and hat.run == my) then return end
+			if K.skip.boosts then return end   -- switched off with its green check on the Kaitun tab
+			boostsApply(true)
+		end
+		K.hooks.boosts = {
+			active = function() return kOn end,
+			on = function() task.spawn(startBoosts, hat.run) end,
+			off = function() pcall(boostsApply, false) end,
 		}
 
 		---------------------------------------------------------------- Kaitun Events = switches the event modules on + shows live numbers
@@ -15749,9 +16553,12 @@ do
 				if not okSweep then warn("[WORST Hub] Kaitun: switching the other features off failed: " .. tostring(errSweep)) end
 				if Config.shell then pcall(Config.shell.set, true) end
 				if origCb then origCb(true) end
-				if stOn then task.spawn(startStatsModules, hat.run) end   -- Kaitun Stats' Auto Rebirth + Auto Equip (Kaitun Hatch itself no longer touches pets)
+				task.spawn(startRebirth, hat.run)   -- Auto Rebirth now belongs to Kaitun Hatch
+				task.spawn(startBoosts, hat.run)    -- Auto Luck Potion + Auto Coins Potion + Auto Claim Quests
+				if stOn then task.spawn(startStatsModules, hat.run) end   -- Kaitun Stats' Auto Equip (Luckiest while hatching, Richest right before each rebirth)
 			else
 				pcall(rebirthApply, false)
+				pcall(boostsApply, false)
 				pcall(equipApply, false)
 				if origCb then origCb(false) end
 				eachManaged(function(e) if e._id then ovr[e._id] = nil end end)
@@ -16315,8 +17122,7 @@ do
 						if v then
 							if kOn then task.spawn(startStatsModules, hat.run) end   -- Kaitun Hatch off: they start as soon as it is switched on
 						else
-							pcall(rebirthApply, false)
-							pcall(equipApply, false)
+							pcall(equipApply, false)   -- Auto Rebirth is Kaitun Hatch's now: it keeps running
 						end
 					end
 					if innerCb then return innerCb(v) end
@@ -16476,7 +17282,7 @@ local function buildButton(row, entry)
 	local btn = new("TextButton", {
 		AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.fromOffset(RIGHT_X, 42),
 		Size = UDim2.fromOffset(120, 42), BackgroundColor3 = RUN_IDLE, AutoButtonColor = false,
-		Text = "Run", TextColor3 = Color3.new(1, 1, 1), TextSize = 17, Font = Enum.Font.GothamMedium,
+		Text = entry.btnText or "Run", TextColor3 = Color3.new(1, 1, 1), TextSize = 17, Font = Enum.Font.GothamMedium,
 	}, row)
 	corner(btn, UDim.new(0, 14))
 	Config.polish(btn)
@@ -16525,7 +17331,7 @@ local function buildButton(row, entry)
 			tween(btn, { BackgroundColor3 = ok and RUN_OK or RUN_FAIL })
 			task.wait(1.5)
 			if not alive then return end
-			btn.Text = "Run"
+			btn.Text = entry.btnText or "Run"
 			tween(btn, { BackgroundColor3 = RUN_IDLE })
 			busy = false
 		end)
@@ -17203,6 +18009,1165 @@ local function buildDropdown(row, entry)
 			if table.find(options, v) and v ~= current then choose(v, true) end
 		end,
 	})
+end
+
+---------------------------------------------------------------- Pets > Enchanting: pet browser (rewritten to be simple)
+-- Four steps, left to right: 1) rarity buttons on top  2) pet type list  3) your pets of that type (cards)  4) the selected pet:
+-- its enchants, "Select Enchant" (choose the enchants you want), "Rename Pet" and "Replace rare enchants". Everything is always on screen and animated (see the animation helpers below).
+function Config.enchantGrid(host, entry)
+	local RSv = game:GetService("ReplicatedStorage")
+	local CARD_W, CARD_H, CIRCLE, MAX_CARDS = 152, 190, 70, 90
+	local okR, Renderer = pcall(function() return require(RSv.Modules.Client.Pets.PetCardRenderer) end)
+	local okEC, EC = pcall(function() return require(RSv.Shared.Pets.EnchantConfig) end)
+	Config.enchantReplace = Config.enchantReplace or {}   -- pet id -> true: this pet's rare / III enchants may be rolled over (default: never)
+	Config.enchantUnlock2 = Config.enchantUnlock2 == true   -- "Unlock 2nd slot" switch: pets whose slot 2 is still locked keep rerolling slot 1 (any result) until slot 2 appears
+	Config.enchantSlot = Config.enchantSlot or {}   -- pet id -> 1 / 2 / "both" (which slot the chosen enchants go on; default both)
+	Config.enchantWanted = Config.enchantWanted or {}   -- pet id -> { enchant name = true }  (what you chose with "Select Enchant"; ready for the rolling logic)
+
+	------------------------------------------------ pet data
+	local RANK = { common = 1, uncommon = 2, rare = 3, epic = 4, legendary = 5, mythic = 6, mythical = 6, godly = 7 }
+	local function rarityRank(r)
+		r = tostring(r or ""):lower()
+		if r:find("secret") then return 100 end
+		return RANK[r] or 0
+	end
+	local function shownTier(t)
+		t = tostring(t or "Normal")
+		if t == "Shiny" then return "Rainbow" end   -- the game's data calls Rainbow pets "Shiny"
+		return t
+	end
+	local function enchName(v)
+		if v == nil then return nil end
+		if type(v) == "string" then return v ~= "" and v or nil end
+		if type(v) == "table" then return tostring(v.Name or v.Id or "?") end
+		return tostring(v)
+	end
+	local function slotCount(p)
+		if okEC and EC and EC.GetSlotCount then
+			local ok, c = pcall(EC.GetSlotCount, p)
+			if ok and tonumber(c) then return math.clamp(math.floor(c), 1, 2) end
+		end
+		return 2
+	end
+	local function readPets()
+		local out = {}
+		local ok, data = pcall(function() return require(RSv.Controllers.Core.DataController):GetReplica().Data end)
+		if ok and type(data) == "table" and type(data.Pets) == "table" and type(data.Pets.Owned) == "table" then
+			for id, p in pairs(data.Pets.Owned) do
+				if type(p) == "table" and p.Name then out[#out + 1] = { id = tostring(p.Id or id), p = p } end
+			end
+		end
+		return out
+	end
+	-- a short fingerprint of what a card shows (enchants, slot count, name): when it changes the card / panel is redrawn
+	local function petSig(p)
+		return tostring(enchName(p.Enchant)) .. "|" .. tostring(enchName(p.Enchant2)) .. "|" .. tostring(slotCount(p)) .. "|" .. tostring(p.Nickname or p.Name) .. "|" .. tostring(p.Tier)
+	end
+	local FILTERS = { { "lo", "Mythical -" }, { "hi", "Mythical +" }, { "sec", "Secret" }, { "all", "All" } }
+	local function inFilter(filter, rk)
+		return filter == "all" or (filter == "lo" and rk >= 1 and rk <= 6) or (filter == "hi" and rk >= 6 and rk <= 7) or (filter == "sec" and rk == 100)
+	end
+	-- groups the pets of one rarity button by name + variety (3 identical Secrets = one entry "x3")
+	local function buildGroups(filter, pets)
+		local map, list = {}, {}
+		for _, e in ipairs(pets) do
+			local p = e.p
+			local rk = rarityRank(p.Rarity)
+			if inFilter(filter, rk) then
+				local key = tostring(p.Name) .. "|" .. tostring(p.Tier or "Normal")
+				local g = map[key]
+				if not g then
+					g = { key = key, name = p.Name, tier = p.Tier or "Normal", rank = rk, pets = {} }
+					map[key] = g
+					list[#list + 1] = g
+				end
+				g.pets[#g.pets + 1] = e
+			end
+		end
+		table.sort(list, function(a, b)
+			if a.rank ~= b.rank then return a.rank > b.rank end
+			if a.name ~= b.name then return a.name < b.name end
+			return tostring(a.tier) < tostring(b.tier)
+		end)
+		for _, g in ipairs(list) do
+			table.sort(g.pets, function(a, b) return (tonumber(a.p.Power) or 0) > (tonumber(b.p.Power) or 0) end)
+		end
+		return list
+	end
+
+	------------------------------------------------ the enchant queue + runner
+	-- Every pet that has enchants chosen ("Select Enchant") is put in the queue in the order you chose them. While the toggle is on, the first pet
+	-- that still needs work is rolled with the game's own server-side auto roll (EnchantService: SetFilters -> AutoStart -> Stop event -> Claim),
+	-- one slot after the other, until the slots hold one of the chosen enchants. Then the next pet in the queue is done.
+	local queue = {}                  -- ordered { id, name, tier }
+	local runOn, runId, ours = false, 0, false   -- toggle state / current run / true while a roll started by THIS page is going
+	local liveStatus, lastResult, rolls = "Off", "", 0
+	local skip, failCount = {}, {}    -- "petId:slot" -> true (slot is not rolled) / unexpected stops in a row
+	local updateLive = function() end -- replaced once the labels exist
+	local paintSwitch = function() end
+	local paintCards, showCards       -- defined further down
+	local function say(s) liveStatus = tostring(s); updateLive() end
+
+	local ES = (function()
+		local rs = RSv:FindFirstChild("RemoteServices")
+		return rs and rs:FindFirstChild("EnchantService")
+	end)()
+	local RF = ES and ES:FindFirstChild("RF")
+	local RE = ES and ES:FindFirstChild("RE")
+	local REASON = {
+		Connection = "Connection interrupted", DataUnavailable = "Your data is still loading", Reserved = "That pet is being traded",
+		ConfirmReplace = "Needs a replace confirmation", ClaimFirst = "A pet is still in the enchanter", AutoRunning = "Another auto enchant is running",
+		InsufficientGems = "Not enough gems", InvalidSlot = "That pet can't use that slot", ChoosePendingEnchant = "Finishing the last roll first",
+		VisitEnchantMachine = "Not at the Enchant Machine", EnchantPending = "Finish the current enchant first", NoFilters = "No filters selected",
+		PetChangedChooseKeep = "The pet changed since that roll", Frozen = "That pet is unavailable", UnknownPet = "That pet is no longer available",
+		RateLimited = "Rate limited", NoRemote = "Remote not found",
+	}
+	-- one remote call: returns the result table, or nil + reason
+	local function rf(name, args)
+		local r = RF and RF:FindFirstChild(name)
+		if not r then return nil, "NoRemote" end
+		local ok, res = pcall(function()
+			if args == nil then return r:InvokeServer() end
+			return r:InvokeServer(args)
+		end)
+		if not ok then return nil, "Connection" end
+		if type(res) == "table" and res.Success then return res end
+		return nil, (type(res) == "table" and res.Reason) or "Unknown"
+	end
+	local stopEvent = nil
+	local evSig = RE and RE:FindFirstChild("AutoEvent")
+	if evSig then
+		connect(evSig.OnClientEvent, function(d)
+			if type(d) ~= "table" then return end
+			if d.Kind == "Stop" then stopEvent = d elseif d.Kind == "Roll" then rolls = rolls + 1 end
+		end)
+	end
+	table.insert(cleanupHooks, function()
+		runOn = false
+		runId = runId + 1
+		if ours then task.spawn(function() pcall(rf, "AutoStop") end) end
+	end)
+
+	local function ownedMap()
+		local ok, data = pcall(function() return require(RSv.Controllers.Core.DataController):GetReplica().Data end)
+		local o = ok and type(data) == "table" and data.Pets and data.Pets.Owned
+		return type(o) == "table" and o or nil
+	end
+	local function isProtected(n)
+		if okEC and EC and EC.IsProtected then
+			local ok, r = pcall(EC.IsProtected, n)
+			return ok and r == true
+		end
+		return false
+	end
+	-- only enchants the game accepts as a roll filter (the same rule Auto Enchant uses); anything else makes SetFilters fail with "InvalidFilter"
+	local function isFilterable(n)
+		if okEC and EC and EC.IsFilterable then
+			local ok, r = pcall(EC.IsFilterable, n)
+			return ok and r == true
+		end
+		return true
+	end
+	local function rankOf(n)
+		if okEC and EC and EC.RankOf then
+			local ok, r = pcall(EC.RankOf, n)
+			if ok and tonumber(r) then return tonumber(r) end
+		end
+		return 0
+	end
+	local function slotChoice(id) return Config.enchantSlot[id] or "both" end
+	local function slotLabel(id)
+		local c = slotChoice(id)
+		return c == "both" and "both slots" or ("slot " .. tostring(c))
+	end
+	local function slotVal(p, slot) return enchName(slot == 2 and p.Enchant2 or p.Enchant) end
+	local function wantedNames(id)
+		local l = {}
+		for n in pairs(Config.enchantWanted[id] or {}) do
+			if isFilterable(n) then l[#l + 1] = n end
+		end
+		table.sort(l)
+		return l
+	end
+	-- puts the pet in / takes it out of the queue after its chosen enchants changed
+	local function syncQueue(id, p)
+		local w = Config.enchantWanted[id]
+		local pos
+		for i, q in ipairs(queue) do if q.id == id then pos = i break end end
+		if w and next(w) then
+			if not pos then queue[#queue + 1] = { id = id, name = tostring(p.Nickname or p.Name), tier = p.Tier } end
+		elseif pos then
+			table.remove(queue, pos)
+		end
+		skip[id .. ":1"], skip[id .. ":2"] = nil, nil
+		updateLive()
+	end
+
+	-- the first queued pet (and slot) that still needs work. Finished pets leave the queue. Rare (protected) enchants are never rolled over.
+	local function nextJob()
+		local owned = ownedMap()
+		if not owned then return nil, "Couldn't read your pets" end
+		local i = 1
+		while i <= #queue do
+			local q = queue[i]
+			local p = owned[q.id]
+			local w = Config.enchantWanted[q.id]
+			if not p or not w or next(w) == nil or #wantedNames(q.id) == 0 then
+				table.remove(queue, i)
+			else
+				local job
+				local choice, maxSlot, slotList = slotChoice(q.id), (slotCount(p) >= 2 and 2 or 1), {}
+				-- Unlock 2nd slot: while slot 2 is still locked, slot 1 is rerolled even if it already holds a wanted enchant (only then are the enchants kept)
+				local huntJob
+				if Config.enchantUnlock2 and maxSlot < 2 and choice ~= 1 and not skip[q.id .. ":1"] then
+					local cur1 = slotVal(p, 1)
+					if cur1 and isProtected(cur1) and not Config.enchantReplace[q.id] then
+						skip[q.id .. ":1"] = true
+						lastResult = q.name .. ": slot 1 keeps its rare " .. cur1 .. " (switch on Replace rare to hunt for slot 2)"
+					else
+						huntJob = 1
+					end
+				end
+				if choice == "both" then
+					for sl = 1, maxSlot do slotList[#slotList + 1] = sl end
+				elseif choice == 2 then
+					if maxSlot >= 2 then slotList[1] = 2 else lastResult = q.name .. ": slot 2 is locked" end
+				else
+					slotList[1] = 1
+				end
+				job = huntJob
+				for _, slot in ipairs(huntJob and {} or slotList) do
+					local cur = slotVal(p, slot)
+					if not (cur and w[cur] and isFilterable(cur)) and not skip[q.id .. ":" .. slot] then
+						if cur and isProtected(cur) and not Config.enchantReplace[q.id] then
+							skip[q.id .. ":" .. slot] = true
+							lastResult = q.name .. ": slot " .. slot .. " keeps its rare " .. cur .. " (switch on Replace rare to roll over it)"
+						else
+							job = slot
+							break
+						end
+					end
+				end
+				if job then return q, p, job end
+				if lastResult:find(q.name, 1, true) ~= 1 then lastResult = q.name .. " is done" end
+				table.remove(queue, i)
+			end
+		end
+		return nil
+	end
+
+	local function current(my) return alive and runOn and runId == my end
+	-- takes the pet out of the enchanter
+	local function claimHeld()
+		local t0 = os.clock()
+		while alive and os.clock() - t0 < 10 do
+			if player:GetAttribute("EnchantHeldPet") == nil then return true end
+			if rf("Claim") then return true end
+			task.wait(0.7)
+		end
+		return player:GetAttribute("EnchantHeldPet") == nil
+	end
+	local function resolvePending()
+		local st = rf("GetState")
+		local en = st and st.Enchanting
+		local pend = en and en.Pending
+		if type(pend) == "table" and pend.Token then rf("Resolve", { Token = pend.Token, UseNew = true }) end
+	end
+
+	-- rolls one slot of one pet until a chosen enchant lands
+	local function runJob(my, q, p, slot)
+		local label = q.name .. " (slot " .. slot .. ")"
+		if player:GetAttribute("EnchantAutoPet") ~= nil or player:GetAttribute("EnchantHeldPet") ~= nil then
+			-- somebody else's roll is running (Auto Enchant / Enchant V2 / Kaitun): never touch its filters, just wait
+			if player:GetAttribute("EnchantAutoPet") == nil then claimHeld() else say("Another enchant feature is rolling - waiting for it") end
+			task.wait(2)
+			return
+		end
+		local names = wantedNames(q.id)
+		local sres, sreason = rf("SetFilters", names)
+		if not sres then
+			say("Couldn't set the enchants (" .. table.concat(names, ", ") .. "): " .. (REASON[sreason] or tostring(sreason)))
+			local k = q.id .. ":" .. slot
+			failCount[k] = (failCount[k] or 0) + 1
+			if failCount[k] >= 3 then skip[k] = true end
+			task.wait(2)
+			return
+		end
+		local started = false
+		for _ = 1, 6 do
+			if not current(my) then return end
+			local args = { PetId = q.id, Slot = slot }
+			local curE = slotVal(p, slot)
+			if curE and Config.enchantReplace[q.id] and isProtected(curE) then args.Replace = curE end   -- the game wants the old rare enchant named
+			local res, reason = rf("AutoStart", args)
+			if res then started = true; break end
+			if reason == "InsufficientGems" then
+				runOn = false; paintSwitch(); say("Stopped: not enough gems"); return
+			elseif reason == "AutoRunning" then
+				say("Another enchant feature is rolling - waiting for it"); task.wait(2); return
+			elseif reason == "ClaimFirst" then
+				claimHeld()
+			elseif reason == "ChoosePendingEnchant" or reason == "EnchantPending" then
+				resolvePending(); task.wait(0.5)
+			elseif reason == "RateLimited" or reason == "Connection" then
+				task.wait(2)
+			else
+				say(label .. ": " .. (REASON[reason] or tostring(reason)))
+				skip[q.id .. ":" .. slot] = true
+				task.wait(1.5)
+				return
+			end
+		end
+		if not started then return end
+		ours, stopEvent, rolls = true, nil, 0
+		local t0, sig, removed = os.clock(), table.concat(names, "|"), false
+		local hunt = Config.enchantUnlock2 and slotCount(p) < 2 and slotChoice(q.id) ~= 1   -- this roll is a hunt for slot 2
+		local huntEnded, lastHuntCheck = nil, os.clock()
+		while current(my) do
+			if stopEvent then break end
+			if hunt and os.clock() - lastHuntCheck >= 1 then   -- slot 2 may appear in the middle of the game's auto roll: stop it right then
+				lastHuntCheck = os.clock()
+				local o = ownedMap()
+				local pp = o and o[q.id]
+				if pp and slotCount(pp) >= 2 then huntEnded = "unlocked"; rf("AutoStop"); break end
+				if not Config.enchantUnlock2 then huntEnded = "off"; rf("AutoStop"); break end
+			end
+			if os.clock() - t0 > 4 and player:GetAttribute("EnchantAutoPet") == nil then task.wait(1); break end
+			local w = Config.enchantWanted[q.id]
+			if not w or next(w) == nil then removed = true; rf("AutoStop"); break end   -- you un-ticked everything / removed the pet
+			local nn = wantedNames(q.id)
+			local s2 = table.concat(nn, "|")
+			if s2 ~= sig then sig = s2; rf("SetFilters", nn) end   -- you changed the enchants while it rolls: applied at once
+			say(string.format("Rolling %s | %d roll(s)", label, rolls))
+			task.wait(0.25)
+		end
+		if not current(my) then return end   -- toggled off: the runner's exit stops the roll
+		local ev = stopEvent or { Reason = "Ended" }
+		claimHeld()
+		ours = false
+		if removed then updateLive(); task.wait(0.3); return end
+		if huntEnded then
+			lastResult = huntEnded == "unlocked" and (q.name .. ": slot 2 unlocked after " .. rolls .. " roll(s)") or (q.name .. ": stopped hunting for slot 2")
+			failCount[q.id .. ":" .. slot] = nil
+			updateLive(); task.wait(0.5); return
+		end
+		local r = tostring(ev.Reason)
+		if r == "Matched" then
+			failCount[q.id .. ":" .. slot] = nil
+			local want = enchName(ev.Enchant)
+			local t1 = os.clock()
+			while current(my) and os.clock() - t1 < 4 do   -- wait until the game's data shows the new enchant
+				local o = ownedMap()
+				local pp = o and o[q.id]
+				if pp and slotVal(pp, slot) == want then break end
+				task.wait(0.2)
+			end
+			lastResult = string.format("%s got %s (%d rolls)", label, tostring(ev.Enchant), tonumber(ev.Rolls) or rolls)
+			if hunt then lastResult = lastResult .. " - slot 2 still locked, rolling on" end
+		elseif r == "Gems" then
+			runOn = false; paintSwitch(); say("Stopped: out of gems"); return
+		else
+			local k = q.id .. ":" .. slot
+			failCount[k] = (failCount[k] or 0) + 1
+			lastResult = label .. " stopped: " .. r
+			if failCount[k] >= 3 then skip[k] = true end
+		end
+		updateLive()
+		task.wait(0.5)
+	end
+
+	local function runner(my)
+		local didWork = false
+		while current(my) do
+			local q, p, slot = nextJob()
+			if q then
+				didWork = true
+				runJob(my, q, p, slot)
+			elseif type(p) == "string" then
+				say(p)   -- e.g. the game's data could not be read: try again shortly
+				task.wait(0.8)
+			else
+				-- nothing left in the queue: the toggle switches itself off
+				runOn = false
+				paintSwitch()
+				say(didWork and "Finished - every pet in the queue has its enchants. Toggle switched off."
+					or "Queue is empty - pick a pet, press Select Enchant and tick enchants, then switch on.")
+			end
+		end
+		if ours then   -- toggled off (or closed) while rolling: stop our own roll and take the pet back
+			pcall(rf, "AutoStop")
+			task.wait(0.5)
+			claimHeld()
+			ours = false
+		end
+	end
+	local function setRun(v)
+		v = v and true or false
+		if v == runOn then return end
+		runOn = v
+		runId = runId + 1
+		if v then
+			for k in pairs(skip) do skip[k] = nil end
+			for k in pairs(failCount) do failCount[k] = nil end
+			say("Starting...")
+			task.spawn(runner, runId)
+		else
+			say("Off")
+		end
+		paintSwitch()
+	end
+
+	------------------------------------------------ animation helpers (this page only)
+	local ORIG = setmetatable({}, { __mode = "k" })   -- instance -> { property = original value }, so a replayed fade never starts from a half faded value
+	local function origOf(inst, prop)
+		local o = ORIG[inst]
+		if not o then o = {}; ORIG[inst] = o end
+		if o[prop] == nil then o[prop] = inst[prop] end
+		return o[prop]
+	end
+	-- Fades `root` and everything inside it in after `delay` seconds; `slide` (a Vector2 of pixels) also slides it in from that far away.
+	-- The invisible start is applied at once, so nothing flashes before the animation begins.
+	local function fadeIn(root, delay, dur, slide)
+		local items = {}
+		local function push(i, prop)
+			local v = origOf(i, prop)
+			if v < 1 then items[#items + 1] = { i, prop, v } end
+		end
+		local function add(i)
+			if i:IsA("UIStroke") then
+				push(i, "Transparency")
+			elseif i:IsA("GuiObject") then
+				push(i, "BackgroundTransparency")
+				if i:IsA("TextLabel") or i:IsA("TextButton") or i:IsA("TextBox") then
+					push(i, "TextTransparency")
+				elseif i:IsA("ImageLabel") or i:IsA("ImageButton") or i:IsA("ViewportFrame") then
+					push(i, "ImageTransparency")
+				end
+			end
+		end
+		add(root)
+		for _, d in ipairs(root:GetDescendants()) do add(d) end
+		for _, it in ipairs(items) do it[1][it[2]] = 1 end
+		local finalPos = slide and origOf(root, "Position") or nil
+		if slide then root.Position = finalPos + UDim2.fromOffset(slide.X, slide.Y) end
+		task.delay(delay or 0, function()
+			if not root.Parent then return end
+			for _, it in ipairs(items) do
+				if it[1].Parent then tween(it[1], { [it[2]] = it[3] }, dur or 0.3) end
+			end
+			if slide then tweenX(root, { Position = finalPos }, dur or 0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out) end
+		end)
+	end
+	-- Hover grow + press squish for a button anchored at its centre. rest / hover: functions that return the button's colours (nil = leave the colour alone).
+	local function pressable(b, rest, hover)
+		local sc = new("UIScale", { Scale = 1 }, b)
+		b.MouseEnter:Connect(function()
+			tweenX(sc, { Scale = 1.03 }, 0.15, Enum.EasingStyle.Quad)
+			if hover then tween(b, { BackgroundColor3 = hover() }, 0.12) end
+		end)
+		b.MouseLeave:Connect(function()
+			tweenX(sc, { Scale = 1 }, 0.2, Enum.EasingStyle.Quad)
+			if rest then tween(b, { BackgroundColor3 = rest() }, 0.15) end
+		end)
+		b.MouseButton1Down:Connect(function() tweenX(sc, { Scale = 0.95 }, 0.08, Enum.EasingStyle.Quad) end)
+		b.MouseButton1Up:Connect(function() tweenX(sc, { Scale = 1.03 }, 0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out) end)
+		return sc
+	end
+	-- true while the object and every parent above it is visible (used to replay the page entrance when you open the page)
+	local function isShown(g)
+		local o = g
+		while o do
+			if o:IsA("LayerCollector") then return true end
+			if o:IsA("GuiObject") and not o.Visible then return false end
+			o = o.Parent
+		end
+		return false
+	end
+
+	------------------------------------------------ small ui helpers
+	local function text(parent, str, x, y, w, h, size, color, font, align)
+		return new("TextLabel", {
+			Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h), BackgroundTransparency = 1, Text = str,
+			TextColor3 = color or C.text, TextSize = size or 15, Font = font or Enum.Font.Gotham, TextWrapped = false,
+			TextXAlignment = align or Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+		}, parent)
+	end
+	local function button(parent, str, x, y, w, h, onClick)
+		local b = new("TextButton", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(x + w / 2, y + h / 2), Size = UDim2.fromOffset(w, h), BackgroundColor3 = RUN_IDLE, AutoButtonColor = false,
+			Text = str, TextColor3 = Color3.new(1, 1, 1), TextSize = 15, Font = Enum.Font.GothamMedium, BorderSizePixel = 0,
+		}, parent)
+		corner(b, UDim.new(0, 12))
+		stroke(b, C.stroke, 1)
+		pressable(b, function() return RUN_IDLE end, function() return RUN_HOVER end)
+		b.MouseButton1Click:Connect(function() onClick(b) end)
+		return b
+	end
+
+	------------------------------------------------ state
+	local filterKey, groups, curGroup, curPet = nil, {}, nil, nil
+	local filterBtns, listBtns, cardObjs = {}, {}, {}
+	local mode = "info"   -- right panel: "info" | "enchant" | "rename"
+
+	------------------------------------------------ step 1: rarity buttons
+	local FW = (1066 - 30) / 4
+	local refreshAll   -- forward declaration
+	local function paintFilters()
+		for k, b in pairs(filterBtns) do
+			local on = (k == filterKey)
+			tween(b, { BackgroundColor3 = on and Color3.fromRGB(70, 70, 70) or RUN_IDLE, TextColor3 = on and Color3.new(1, 1, 1) or C.sub }, 0.18)
+			local st = b:FindFirstChildOfClass("UIStroke")
+			if st then tween(st, { Color = on and C.iconFg or C.stroke, Thickness = on and 2 or 1 }, 0.18) end
+		end
+	end
+	for i, f in ipairs(FILTERS) do
+		local key, name = f[1], f[2]
+		local b = new("TextButton", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset((i - 1) * (FW + 10) + FW / 2, 22), Size = UDim2.fromOffset(FW, 44), BackgroundColor3 = RUN_IDLE, AutoButtonColor = false,
+			Text = name, TextColor3 = C.sub, TextSize = 17, Font = Enum.Font.GothamMedium, BorderSizePixel = 0,
+		}, host)
+		corner(b, UDim.new(0, 14))
+		stroke(b, C.stroke, 1)
+		pressable(b, function() return key == filterKey and Color3.fromRGB(70, 70, 70) or RUN_IDLE end,
+			function() return key == filterKey and Color3.fromRGB(70, 70, 70) or RUN_HOVER end)
+		b.MouseButton1Click:Connect(function()
+			filterKey, curGroup, curPet, mode = key, nil, nil, "info"
+			refreshAll()
+		end)
+		filterBtns[key] = b
+	end
+
+	------------------------------------------------ stage with three columns
+	local stage = new("Frame", {
+		Position = UDim2.fromOffset(0, 56), Size = UDim2.fromOffset(1066, 524), BackgroundColor3 = C.card,
+		BackgroundTransparency = CARD_T, BorderSizePixel = 0, ClipsDescendants = true,
+	}, host)
+	corner(stage, UDim.new(0, 20))
+	stroke(stage, C.stroke, 1)
+
+	local LX, LW, MX, MW, RX, RW, TOP, COLH = 12, 250, 274, 520, 806, 248, 40, 474
+	text(stage, "2   PET TYPE", LX + 4, 10, LW, 22, 14, C.sub, Enum.Font.GothamBold)
+	text(stage, "3   YOUR PETS", MX + 4, 10, MW, 22, 14, C.sub, Enum.Font.GothamBold)
+	text(stage, "4   SELECTED PET", RX + 4, 10, RW, 22, 14, C.sub, Enum.Font.GothamBold)
+	for _, x in ipairs({ MX - 6, RX - 6 }) do
+		new("Frame", { Position = UDim2.fromOffset(x, 12), Size = UDim2.fromOffset(1, 500), BackgroundColor3 = C.stroke, BackgroundTransparency = 0.5, BorderSizePixel = 0 }, stage)
+	end
+
+	-- the enchanting toggle, right next to "4 SELECTED PET"
+	local swLabel = text(stage, "Enchant", RX + 120, 8, 72, 24, 13, C.sub, Enum.Font.GothamMedium, Enum.TextXAlignment.Right)
+	local sw = new("TextButton", {
+		Position = UDim2.fromOffset(RX + RW - 50, 8), Size = UDim2.fromOffset(46, 24), BackgroundColor3 = RUN_IDLE, AutoButtonColor = false,
+		Text = "", BorderSizePixel = 0,
+	}, stage)
+	corner(sw, UDim.new(1, 0))
+	local swStroke = stroke(sw, C.stroke, 1)
+	local knob = new("Frame", { Position = UDim2.fromOffset(3, 3), Size = UDim2.fromOffset(18, 18), BackgroundColor3 = C.sub, BorderSizePixel = 0 }, sw)
+	corner(knob, UDim.new(1, 0))
+	local swPulse
+	paintSwitch = function()
+		tweenX(knob, { Position = runOn and UDim2.fromOffset(25, 3) or UDim2.fromOffset(3, 3), BackgroundColor3 = runOn and Color3.new(1, 1, 1) or C.sub }, 0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+		tween(sw, { BackgroundColor3 = runOn and Color3.fromRGB(85, 85, 85) or RUN_IDLE }, 0.15)
+		tween(swLabel, { TextColor3 = runOn and C.text or C.sub }, 0.15)
+		if swPulse then swPulse:Cancel(); swPulse = nil end
+		if runOn then   -- breathing outline while it is rolling
+			swStroke.Color, swStroke.Thickness = C.iconFg, 1
+			swPulse = TweenService:Create(swStroke, TweenInfo.new(0.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), { Color = Color3.fromRGB(110, 110, 110), Thickness = 2 })
+			swPulse:Play()
+		else
+			tween(swStroke, { Color = C.stroke, Thickness = 1 }, 0.2)
+		end
+	end
+	sw.MouseButton1Click:Connect(function() setRun(not runOn) end)
+
+	-- "Unlock 2nd slot" switch, just below the Enchant switch: on = a pet whose slot 2 is still locked keeps rerolling slot 1 (even if it already
+	-- holds a wanted enchant) until slot 2 appears; only then are the chosen enchants kept. Applies to pets set to "Slot 2" or "Both".
+	local u2Label = text(stage, "Unlock 2nd slot", RX + RW - 50 - 6 - 150, 36, 150, 24, 13, C.sub, Enum.Font.GothamMedium, Enum.TextXAlignment.Right)
+	local u2 = new("TextButton", {
+		Position = UDim2.fromOffset(RX + RW - 50, 36), Size = UDim2.fromOffset(46, 24), BackgroundColor3 = RUN_IDLE, AutoButtonColor = false,
+		Text = "", BorderSizePixel = 0,
+	}, stage)
+	corner(u2, UDim.new(1, 0))
+	local u2Stroke = stroke(u2, C.stroke, 1)
+	local u2Knob = new("Frame", { Position = UDim2.fromOffset(3, 3), Size = UDim2.fromOffset(18, 18), BackgroundColor3 = C.sub, BorderSizePixel = 0 }, u2)
+	corner(u2Knob, UDim.new(1, 0))
+	local function paintUnlock2()
+		local on = Config.enchantUnlock2 == true
+		tweenX(u2Knob, { Position = on and UDim2.fromOffset(25, 3) or UDim2.fromOffset(3, 3), BackgroundColor3 = on and Color3.new(1, 1, 1) or C.sub }, 0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+		tween(u2, { BackgroundColor3 = on and Color3.fromRGB(85, 85, 85) or RUN_IDLE }, 0.15)
+		tween(u2Label, { TextColor3 = on and C.text or C.sub }, 0.15)
+		tween(u2Stroke, { Color = on and C.iconFg or C.stroke }, 0.2)
+	end
+	u2.MouseButton1Click:Connect(function()
+		Config.enchantUnlock2 = not Config.enchantUnlock2
+		paintUnlock2()
+		say(Config.enchantUnlock2 and "Unlock 2nd slot ON: pets with a locked slot 2 keep rolling slot 1 until slot 2 appears." or "Unlock 2nd slot off.")
+	end)
+	paintUnlock2()
+
+	local listFrame = new("ScrollingFrame", {
+		Position = UDim2.fromOffset(LX, TOP), Size = UDim2.fromOffset(LW, COLH), BackgroundTransparency = 1, BorderSizePixel = 0,
+		ScrollBarThickness = 4, ScrollBarImageColor3 = C.stroke, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+	}, stage)
+	new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, listFrame)
+	new("UIPadding", { PaddingRight = UDim.new(0, 8) }, listFrame)
+
+	local grid = new("ScrollingFrame", {
+		Position = UDim2.fromOffset(MX, TOP), Size = UDim2.fromOffset(MW, COLH), BackgroundTransparency = 1, BorderSizePixel = 0,
+		ScrollBarThickness = 4, ScrollBarImageColor3 = C.stroke, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+	}, stage)
+	new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal, Wraps = true, HorizontalAlignment = Enum.HorizontalAlignment.Center,
+		VerticalAlignment = Enum.VerticalAlignment.Top, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 12),
+	}, grid)
+	new("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 8) }, grid)
+	local gridHint = new("TextLabel", {
+		Position = UDim2.fromOffset(MX, TOP), Size = UDim2.fromOffset(MW, COLH), BackgroundTransparency = 1, TextWrapped = true,
+		Text = "", TextColor3 = C.sub, TextSize = 16, Font = Enum.Font.Gotham,
+	}, stage)
+
+	local DY = 26   -- the "Unlock 2nd slot" switch sits under the Enchant switch, so the right column starts this much lower
+	local detail = new("Frame", { Position = UDim2.fromOffset(RX, TOP + DY), Size = UDim2.fromOffset(RW, COLH - DY), BackgroundTransparency = 1 }, stage)
+	-- status line + queue, at the bottom of the right column (not rebuilt with the rest, so typing a new name is never interrupted)
+	local liveBox = new("TextLabel", {
+		Position = UDim2.fromOffset(RX, TOP + 366 + DY), Size = UDim2.fromOffset(RW, 108 - DY), BackgroundTransparency = 1, TextWrapped = true,
+		TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, Text = "", TextColor3 = C.sub,
+		TextSize = 13, Font = Enum.Font.Gotham, ClipsDescendants = true,
+	}, stage)
+	updateLive = function()
+		local lines = { liveStatus }
+		if lastResult ~= "" then lines[#lines + 1] = "Last: " .. lastResult end
+		lines[#lines + 1] = ""
+		lines[#lines + 1] = "Queue (" .. #queue .. ") - right-click a card to remove:"
+		for i, q in ipairs(queue) do
+			if i > 5 then lines[#lines + 1] = "..."; break end
+			lines[#lines + 1] = (i == 1 and "> " or "  ") .. i .. ". " .. q.name .. " (" .. shownTier(q.tier) .. ") [" .. slotLabel(q.id) .. "] - " .. table.concat(wantedNames(q.id), ", ")
+		end
+		liveBox.Text = table.concat(lines, "\n")
+		liveBox.Visible = (mode ~= "enchant")
+		if paintCards then paintCards() end
+	end
+
+	------------------------------------------------ step 4: the selected pet (right column)
+	local statusMsg = ""
+	local renderDetail
+	local function setStatus(s) say(s) end
+
+	local function wantedList(p)
+		local w, l = Config.enchantWanted[curPet and curPet.id or ""] or {}, {}
+		for n in pairs(w) do l[#l + 1] = n end
+		table.sort(l)
+		return l
+	end
+
+	local detailKey = nil
+	local renderDetailRaw = function()
+		for _, c in ipairs(detail:GetChildren()) do c:Destroy() end
+		updateLive()
+		if not curPet then
+			text(detail, curGroup and "Click a pet card to select it." or "Pick a pet type first.", 0, 0, RW, 40, 15, C.sub)
+			return
+		end
+		local p = curPet.p
+		text(detail, tostring(p.Nickname or p.Name), 0, 0, RW, 26, 19, C.text, Enum.Font.GothamBold)
+		text(detail, shownTier(p.Tier) .. "  -  " .. tostring(p.Affinity or p.PetAffinity or "no affinity"), 0, 28, RW, 20, 14, C.sub)
+
+		if mode == "enchant" then
+			-- pick the enchants you want (tick several); stored in Config.enchantWanted[pet id]
+			text(detail, "Tick the enchants you want:", 0, 58, RW, 20, 14, C.text, Enum.Font.GothamMedium)
+			local names = {}
+			if okEC and EC and type(EC.Enchants) == "table" then
+				for n in pairs(EC.Enchants) do
+					if isFilterable(n) then names[#names + 1] = tostring(n) end
+				end
+			end
+			table.sort(names, function(a, b)
+				local ra, rb = rankOf(a), rankOf(b)
+				if ra ~= rb then return ra > rb end
+				return a < b
+			end)
+			local sc = new("ScrollingFrame", {
+				Position = UDim2.fromOffset(0, 82), Size = UDim2.fromOffset(RW, 302), BackgroundTransparency = 1, BorderSizePixel = 0,
+				ScrollBarThickness = 3, ScrollBarImageColor3 = C.stroke, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+			}, detail)
+			new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, sc)
+			new("UIPadding", { PaddingRight = UDim.new(0, 6) }, sc)
+			if #names == 0 then text(sc, "No enchant list found.", 0, 0, RW, 24, 14, C.sub) end
+			for i, n in ipairs(names) do
+				local w = Config.enchantWanted[curPet.id]
+				local on = w and w[n] or false
+				local b = new("TextButton", {
+					LayoutOrder = i, Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = on and Color3.fromRGB(60, 60, 60) or RUN_IDLE, AutoButtonColor = false,
+					Text = (on and "[x]  " or "[  ]  ") .. n, TextColor3 = on and Color3.new(1, 1, 1) or C.sub, TextSize = 14, Font = Enum.Font.Gotham,
+					TextXAlignment = Enum.TextXAlignment.Left, BorderSizePixel = 0,
+				}, sc)
+				corner(b, UDim.new(0, 8))
+				new("UIPadding", { PaddingLeft = UDim.new(0, 10) }, b)
+				b.MouseEnter:Connect(function() tween(b, { BackgroundColor3 = on and Color3.fromRGB(78, 78, 78) or RUN_HOVER }, 0.1) end)
+				b.MouseLeave:Connect(function() tween(b, { BackgroundColor3 = on and Color3.fromRGB(60, 60, 60) or RUN_IDLE }, 0.14) end)
+				b.MouseButton1Click:Connect(function()
+					local t = Config.enchantWanted[curPet.id] or {}
+					Config.enchantWanted[curPet.id] = t
+					t[n] = (not t[n]) or nil
+					if next(t) == nil then Config.enchantWanted[curPet.id] = nil end
+					syncQueue(curPet.id, curPet.p)
+					renderDetail()
+				end)
+			end
+			button(detail, "Done", 0, 394, RW, 44, function() mode = "info"; renderDetail() end)
+			return
+		end
+
+		-- the two enchant slots
+		local e1, e2 = enchName(p.Enchant), enchName(p.Enchant2)
+		text(detail, "Slot 1:  " .. (e1 or "empty"), 0, 62, RW, 22, 15, e1 and C.text or C.sub)
+		if slotCount(p) >= 2 then
+			text(detail, "Slot 2:  " .. (e2 or "empty"), 0, 88, RW, 22, 15, e2 and C.text or C.sub)
+		else
+			text(detail, "Slot 2:  locked", 0, 88, RW, 22, 15, Color3.fromRGB(95, 95, 95))
+		end
+		local w = wantedList(p)
+		text(detail, "Wanted:  " .. (#w > 0 and table.concat(w, ", ") or "nothing chosen"), 0, 118, RW, 22, 14, #w > 0 and C.iconFg or C.sub)
+
+		-- which slot the chosen enchants go on: Slot 1 / Slot 2 / Both (every unlocked slot ends up with one of them)
+		local choice = slotChoice(curPet.id)
+		local SLOT_OPTS = { { 1, "Slot 1" }, { 2, "Slot 2" }, { "both", "Both" } }
+		local bw = (RW - 8) / 3
+		for i, o in ipairs(SLOT_OPTS) do
+			local on = (choice == o[1])
+			local b = new("TextButton", {
+				Position = UDim2.fromOffset((i - 1) * (bw + 4), 146), Size = UDim2.fromOffset(bw, 30), AutoButtonColor = false, BorderSizePixel = 0,
+				BackgroundColor3 = on and Color3.fromRGB(70, 70, 70) or RUN_IDLE, Text = o[2], TextSize = 13, Font = Enum.Font.GothamMedium,
+				TextColor3 = on and Color3.new(1, 1, 1) or C.sub,
+			}, detail)
+			corner(b, UDim.new(0, 10))
+			stroke(b, on and C.iconFg or C.stroke, on and 2 or 1)
+			b.MouseEnter:Connect(function() tween(b, { BackgroundColor3 = on and Color3.fromRGB(86, 86, 86) or RUN_HOVER }, 0.1) end)
+			b.MouseLeave:Connect(function() tween(b, { BackgroundColor3 = on and Color3.fromRGB(70, 70, 70) or RUN_IDLE }, 0.14) end)
+			b.MouseButton1Click:Connect(function()
+				Config.enchantSlot[curPet.id] = o[1]
+				syncQueue(curPet.id, curPet.p)
+				renderDetail()
+			end)
+		end
+
+		button(detail, "Select Enchant", 0, 188, RW, 40, function() mode = "enchant"; renderDetail() end)
+
+		if mode == "rename" then
+			local box = new("TextBox", {
+				Position = UDim2.fromOffset(0, 236), Size = UDim2.fromOffset(RW, 42), BackgroundColor3 = FIELD, BorderSizePixel = 0,
+				ClearTextOnFocus = false, Text = tostring(p.Nickname or ""), PlaceholderText = "New name...", PlaceholderColor3 = Color3.fromRGB(109, 109, 109),
+				TextColor3 = C.text, TextSize = 15, Font = Enum.Font.Gotham, TextXAlignment = Enum.TextXAlignment.Left,
+			}, detail)
+			corner(box, UDim.new(0, 12))
+			stroke(box, C.stroke, 1)
+			new("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }, box)
+			button(detail, "Apply name", 0, 284, RW, 36, function()
+				local nick = (box.Text:gsub("^%s+", ""))
+				nick = (nick:gsub("%s+$", ""))
+				if nick == "" then setStatus("Type a name first."); return end
+				local rs = RSv:FindFirstChild("RemoteServices")
+				local ps = rs and rs:FindFirstChild("PetService")
+				local rfs = ps and ps:FindFirstChild("RF")
+				local remote = rfs and rfs:FindFirstChild("SetNickname")
+				if not remote then setStatus("Rename failed: PetService.RF.SetNickname not found."); return end
+				local ok, res = pcall(function() return remote:InvokeServer({ Nickname = nick, PetId = curPet.id }) end)
+				if not ok then setStatus("Rename failed: " .. tostring(res)); return end
+				if type(res) == "table" and res.Success == false then setStatus("Rename failed: " .. tostring(res.Reason or "refused by the game")); return end
+				task.wait(0.4)
+				pcall(function() curPet.p.Nickname = nick end)   -- in case the game's data table has not updated yet
+				mode = "info"
+				setStatus("Renamed to " .. nick)
+				showCards()
+				renderDetail()
+			end)
+		else
+			button(detail, "Rename Pet", 0, 236, RW, 40, function() mode = "rename"; renderDetail() end)
+		end
+
+		-- Replace rare: off = a slot holding a rare / III enchant is never rolled over (it is skipped). Sits below Rename Pet.
+		local repY = (mode == "rename") and 328 or 284
+		local rep_ = Config.enchantReplace[curPet.id] == true
+		local rb = new("TextButton", {
+			Position = UDim2.fromOffset(0, repY), Size = UDim2.fromOffset(RW, 30), AutoButtonColor = false, BorderSizePixel = 0,
+			BackgroundColor3 = rep_ and Color3.fromRGB(95, 60, 60) or RUN_IDLE, Text = "Replace rare enchants:  " .. (rep_ and "ON" or "off"),
+			TextSize = 13, Font = Enum.Font.GothamMedium, TextColor3 = rep_ and Color3.new(1, 1, 1) or C.sub,
+		}, detail)
+		corner(rb, UDim.new(0, 10))
+		stroke(rb, rep_ and Color3.fromRGB(200, 120, 120) or C.stroke, rep_ and 2 or 1)
+		rb.MouseEnter:Connect(function() tween(rb, { BackgroundColor3 = rep_ and Color3.fromRGB(115, 72, 72) or RUN_HOVER }, 0.1) end)
+		rb.MouseLeave:Connect(function() tween(rb, { BackgroundColor3 = rep_ and Color3.fromRGB(95, 60, 60) or RUN_IDLE }, 0.14) end)
+		rb.MouseButton1Click:Connect(function()
+			Config.enchantReplace[curPet.id] = (not rep_) or nil
+			syncQueue(curPet.id, curPet.p)
+			renderDetail()
+		end)
+	end
+
+	-- the panel slides in one piece after the other, but only when the pet or the mode changed (not on every tick / slot click)
+	renderDetail = function()
+		renderDetailRaw()
+		local key = (curPet and tostring(curPet.id) or "none") .. "|" .. tostring(mode)
+		if key == detailKey then return end
+		detailKey = key
+		local n = 0
+		for _, c in ipairs(detail:GetChildren()) do
+			if c:IsA("GuiObject") then
+				n = n + 1
+				fadeIn(c, 0.035 * (n - 1), 0.3, Vector2.new(18, 0))
+			end
+		end
+	end
+
+	------------------------------------------------ step 3: pet cards
+	local pulseTween, pulseOwner
+	local function stopPulse()
+		if pulseTween then pulseTween:Cancel(); pulseTween = nil end
+		pulseOwner = nil
+	end
+	paintCards = function()
+		for _, o in ipairs(cardObjs) do
+			local on = (curPet ~= nil and o.entry == curPet)
+			if on ~= o.on then   -- only when the selection really changed (this runs often while rolling)
+				o.on = on
+				if on then
+					stopPulse()
+					pulseOwner = o
+					tween(o.stroke, { Color = Color3.fromRGB(235, 235, 235), Thickness = 3 }, 0.15)
+					tween(o.body, { BackgroundColor3 = Color3.fromRGB(34, 34, 34) }, 0.15)
+					task.delay(0.2, function()   -- the selected card then breathes
+						if pulseOwner == o and o.stroke.Parent then
+							pulseTween = TweenService:Create(o.stroke, TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), { Color = Color3.fromRGB(140, 140, 140) })
+							pulseTween:Play()
+						end
+					end)
+				else
+					if pulseOwner == o then stopPulse() end
+					tween(o.stroke, { Color = C.stroke, Thickness = 1 }, 0.2)
+					tween(o.body, { BackgroundColor3 = Color3.fromRGB(16, 16, 16) }, 0.2)
+				end
+			end
+			local pos
+			for i, q in ipairs(queue) do if q.id == o.entry.id then pos = i break end end
+			o.badge.Visible = pos ~= nil
+			if pos then
+				o.badge.Text = "#" .. pos
+				if not o.shown then   -- the queue badge pops in
+					o.shown = true
+					o.badgeScale.Scale = 0.3
+					tweenX(o.badgeScale, { Scale = 1 }, 0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+				end
+			else
+				o.shown = false
+			end
+		end
+	end
+
+	------------------------------------------------ pet icons: our own viewport (the game's PetCardRenderer can not be called from here)
+	-- A one-time index of every Model / MeshPart in ReplicatedStorage by name; the pet's model is cloned into a ViewportFrame inside the circle.
+	local modelIndex = nil
+	local function buildModelIndex()
+		modelIndex = {}
+		local n = 0
+		local function scan(root)
+			for _, d in ipairs(root:GetDescendants()) do
+				if d:IsA("Model") or d:IsA("MeshPart") then
+					local l = modelIndex[d.Name]
+					if not l then l = {}; modelIndex[d.Name] = l end
+					l[#l + 1] = d
+				end
+				n = n + 1
+				if n % 3000 == 0 then task.wait() end
+			end
+		end
+		pcall(scan, RSv)
+	end
+	local TIER_WORDS = { golden = true, diamond = true, shiny = true, rainbow = true }
+	local function findModel(p)
+		if not modelIndex then buildModelIndex() end
+		local list = modelIndex[tostring(p.Name)]
+		if not list then return nil, {} end
+		local tier = tostring(p.Tier or "Normal"):lower()
+		local best, bestScore = nil, -1e9
+		for _, m in ipairs(list) do
+			local path = m:GetFullName():lower()
+			local score = 0
+			if tier == "normal" then
+				for w in pairs(TIER_WORDS) do if path:find(w, 1, true) then score = score - 2 end end
+			else
+				if path:find(tier, 1, true) then score = score + 3 end
+				if tier == "shiny" and path:find("rainbow", 1, true) then score = score + 3 end
+			end
+			if path:find("pet", 1, true) then score = score + 1 end
+			if path:find("icon", 1, true) or path:find("thumb", 1, true) then score = score - 1 end
+			if m:IsA("Model") then score = score + 0.5 end
+			if score > bestScore then best, bestScore = m, score end
+		end
+		return best, list
+	end
+	-- Puts a clone of the pet's model into a viewport inside `circle`. Returns true if it worked.
+	local function drawModel(circle, p)
+		local src = findModel(p)
+		if not src then return false end
+		local ok, res = pcall(function()
+			local clone = src:Clone()
+			for _, d in ipairs(clone:GetDescendants()) do   -- icons must not run the pet's scripts / animations
+				if d:IsA("BaseScript") then d:Destroy() end
+			end
+			local vp = new("ViewportFrame", {
+				Name = "PetView", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 2,
+				Ambient = Color3.fromRGB(170, 170, 170), LightColor = Color3.fromRGB(255, 255, 255), LightDirection = Vector3.new(-1, -1.5, -1),
+			}, circle)
+			clone.Parent = vp
+			local cf, size
+			if clone:IsA("Model") then cf, size = clone:GetBoundingBox() else cf, size = clone.CFrame, clone.Size end
+			local cam = new("Camera", { FieldOfView = 35 }, vp)
+			local dist = (size.Magnitude / 2) / math.tan(math.rad(cam.FieldOfView / 2)) * 1.05
+			local dir = Vector3.new(0.55, 0.35, 1).Unit
+			cam.CFrame = CFrame.lookAt(cf.Position + dir * dist, cf.Position)
+			vp.CurrentCamera = cam
+			return true
+		end)
+		if not ok then warn("[WORST Hub] icon draw failed for " .. tostring(p.Name) .. ": " .. tostring(res)) end
+		return ok and res == true
+	end
+
+	local function makeCard(e, order)
+		local p = e.p
+		local slotFrame = new("Frame", { Size = UDim2.fromOffset(CARD_W, CARD_H), BackgroundTransparency = 1, LayoutOrder = order }, grid)
+		local card = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1 }, slotFrame)
+		local cardScale = new("UIScale", { Scale = 1 }, card)   -- the card pops in and grows a little under the mouse; its slot in the grid never moves
+		local body = new("Frame", {
+			Position = UDim2.fromOffset(0, CIRCLE / 2), Size = UDim2.fromOffset(CARD_W, CARD_H - CIRCLE / 2),
+			BackgroundColor3 = Color3.fromRGB(16, 16, 16), BackgroundTransparency = 0.15, BorderSizePixel = 0,
+		}, card)
+		corner(body, UDim.new(0, 16))
+		local st = stroke(body, C.stroke, 1)
+		local circle = new("ImageLabel", {
+			Position = UDim2.fromOffset((CARD_W - CIRCLE) / 2, 0), Size = UDim2.fromOffset(CIRCLE, CIRCLE), BackgroundColor3 = C.iconBg,
+			BorderSizePixel = 0, ClipsDescendants = true, ZIndex = 2, ScaleType = Enum.ScaleType.Fit,
+		}, card)
+		corner(circle, UDim.new(1, 0))
+		stroke(circle, Color3.fromRGB(205, 205, 205), 2)
+
+		-- texts first (a slow icon can never leave a card empty)
+		local function ct(str, y, size, color, font)
+			local l = text(card, str, 6, y, CARD_W - 12, size + 8, size, color, font, Enum.TextXAlignment.Center)
+			l.ZIndex = 3
+			return l
+		end
+		local nameL = ct("", 76, 15, C.text, Enum.Font.GothamBold)
+		local tierL = ct("", 100, 12, C.sub)
+		local slot1L = ct("", 130, 13, C.sub)
+		local slot2L = ct("", 152, 13, C.sub)
+		-- (re)writes the texts from the pet's CURRENT data (e.p), so a slot that got unlocked / rolled shows up without reopening the page
+		local function paintTexts()
+			local q = e.p
+			nameL.Text = tostring(q.Nickname or q.Name)
+			tierL.Text = shownTier(q.Tier) .. " - " .. tostring(q.Affinity or q.PetAffinity or "no affinity")
+			local a, b = enchName(q.Enchant), enchName(q.Enchant2)
+			slot1L.Text = "1: " .. (a or "empty")
+			slot1L.TextColor3 = a and C.text or C.sub
+			if slotCount(q) >= 2 then
+				slot2L.Text = "2: " .. (b or "empty")
+				slot2L.TextColor3 = b and C.text or C.sub
+			else
+				slot2L.Text = "2: locked"
+				slot2L.TextColor3 = Color3.fromRGB(95, 95, 95)
+			end
+		end
+		paintTexts()
+
+		-- icon: own thread; the fallback letter is created here (the spawned thread may not create Instances)
+		local letterLbl = new("TextLabel", {
+			Name = "Letter", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = string.sub(tostring(p.Name), 1, 1),
+			TextColor3 = C.text, TextSize = 28, Font = Enum.Font.GothamBold, ZIndex = 3, Visible = false,
+		}, circle)
+		if not drawModel(circle, p) then
+			letterLbl.Visible = true   -- no model found for this pet: its first letter instead
+			if not Config._iconDebugDone then
+				Config._iconDebugDone = true
+				local _, list = findModel(p)
+				local paths, names = {}, {}
+				for i, m in ipairs(list) do if i <= 6 then paths[#paths + 1] = m:GetFullName() end end
+				local c = 0
+				for k in pairs(modelIndex or {}) do c = c + 1 end
+				for _, ch in ipairs(RSv:GetChildren()) do names[#names + 1] = ch.Name end
+				warn(string.format("[WORST Hub] icon debug: no model for '%s' (%s). candidates={%s} indexedNames=%d ReplicatedStorage={%s}",
+					tostring(p.Name), tostring(p.Tier), table.concat(paths, " ; "), c, table.concat(names, ", ")))
+			end
+		end
+
+		local click = new("TextButton", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "", ZIndex = 6 }, card)
+		click.MouseButton1Click:Connect(function()
+			curPet, mode, statusMsg = e, "info", ""
+			paintCards()
+			renderDetail()
+		end)
+		local badge = new("TextLabel", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(CARD_W - 40 + 17, CIRCLE / 2 + 6 + 9), Size = UDim2.fromOffset(34, 18), BackgroundColor3 = C.iconFg, BorderSizePixel = 0,
+			Text = "", TextColor3 = Color3.fromRGB(15, 15, 15), TextSize = 12, Font = Enum.Font.GothamBold, Visible = false, ZIndex = 4,
+		}, card)
+		corner(badge, UDim.new(1, 0))
+		local badgeScale = new("UIScale", { Scale = 1 }, badge)
+		-- right click = take this pet out of the queue (its chosen enchants are cleared; a roll that is running on it is stopped)
+		click.MouseButton2Click:Connect(function()
+			local queued = false
+			for _, q in ipairs(queue) do if q.id == e.id then queued = true break end end
+			if not queued then return end
+			lastResult = tostring(p.Nickname or p.Name) .. " removed from the queue"
+			Config.enchantWanted[e.id] = nil
+			syncQueue(e.id, p)
+			if curPet == e then renderDetail() end
+		end)
+		local obj = { frame = slotFrame, entry = e, stroke = st, body = body, badge = badge, badgeScale = badgeScale, on = false, shown = false, paintTexts = paintTexts, sig = petSig(p) }
+		cardObjs[#cardObjs + 1] = obj
+		-- hover / press
+		click.MouseEnter:Connect(function()
+			tweenX(cardScale, { Scale = 1.045 }, 0.16, Enum.EasingStyle.Quad)
+			if not obj.on then
+				tween(body, { BackgroundColor3 = Color3.fromRGB(26, 26, 26) }, 0.12)
+				tween(st, { Color = Color3.fromRGB(150, 150, 150) }, 0.12)
+			end
+		end)
+		click.MouseLeave:Connect(function()
+			tweenX(cardScale, { Scale = 1 }, 0.2, Enum.EasingStyle.Quad)
+			if not obj.on then
+				tween(body, { BackgroundColor3 = Color3.fromRGB(16, 16, 16) }, 0.15)
+				tween(st, { Color = C.stroke }, 0.15)
+			end
+		end)
+		click.MouseButton1Down:Connect(function() tweenX(cardScale, { Scale = 0.96 }, 0.08, Enum.EasingStyle.Quad) end)
+		click.MouseButton1Up:Connect(function() tweenX(cardScale, { Scale = 1.045 }, 0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out) end)
+		-- pop in, one card after the other (only the first 24 are staggered, the rest just appear)
+		if order <= 24 then
+			local d = 0.03 * (order - 1)
+			cardScale.Scale = 0.7
+			fadeIn(card, d, 0.3)
+			task.delay(d, function()
+				if card.Parent then tweenX(cardScale, { Scale = 1 }, 0.38, Enum.EasingStyle.Back, Enum.EasingDirection.Out) end
+			end)
+		end
+	end
+
+	showCards = function()
+		for _, c in ipairs(grid:GetChildren()) do
+			if c:IsA("Frame") then c:Destroy() end
+		end
+		cardObjs = {}
+		stopPulse()
+		grid.CanvasPosition = Vector2.zero
+		if not curGroup then
+			gridHint.Text = filterKey and "Pick a pet type on the left." or "Start with step 1: press a rarity button above."
+			gridHint.Visible = true
+			fadeIn(gridHint, 0, 0.35)
+			return
+		end
+		gridHint.Visible = false
+		for i, e in ipairs(curGroup.pets) do
+			if i > MAX_CARDS then break end
+			local ok, err = pcall(makeCard, e, i)
+			if not ok then warn("[WORST Hub] Enchanting card failed: " .. tostring(err)) end
+		end
+		paintCards()
+	end
+
+	------------------------------------------------ step 2: pet type list
+	local function showList()
+		for _, c in ipairs(listFrame:GetChildren()) do
+			if c:IsA("GuiObject") then c:Destroy() end
+		end
+		listBtns = {}
+		groups = filterKey and buildGroups(filterKey, readPets()) or {}
+		if not filterKey then
+			fadeIn(text(listFrame, "Press a rarity button above.", 0, 0, LW - 8, 40, 14, C.sub), 0, 0.35)
+			return
+		end
+		if #groups == 0 then
+			fadeIn(text(listFrame, "You have no pets in this rarity.", 0, 0, LW - 8, 40, 14, C.sub), 0, 0.35)
+			return
+		end
+		for i, g in ipairs(groups) do
+			local holder = new("Frame", { LayoutOrder = i, Size = UDim2.new(1, 0, 0, 44), BackgroundTransparency = 1 }, listFrame)
+			local b = new("TextButton", {
+				Size = UDim2.fromScale(1, 1), BackgroundColor3 = RUN_IDLE, AutoButtonColor = false, BorderSizePixel = 0,
+				Text = "", ClipsDescendants = true,
+			}, holder)
+			corner(b, UDim.new(0, 12))
+			local st = stroke(b, C.stroke, 1)
+			text(b, tostring(g.name), 12, 4, LW - 90, 20, 15, C.text, Enum.Font.GothamMedium)
+			text(b, shownTier(g.tier), 12, 24, LW - 90, 16, 12, C.sub)
+			text(b, "x" .. #g.pets, LW - 70, 0, 52, 44, 15, C.iconFg, Enum.Font.GothamBold, Enum.TextXAlignment.Right)
+			listBtns[g.key] = { b = b, st = st }
+			b.MouseEnter:Connect(function() if not (curGroup and curGroup.key == g.key) then tween(b, { BackgroundColor3 = RUN_HOVER }, 0.1) end end)
+			b.MouseLeave:Connect(function() if not (curGroup and curGroup.key == g.key) then tween(b, { BackgroundColor3 = RUN_IDLE }, 0.14) end end)
+			fadeIn(b, 0.04 * math.min(i - 1, 14), 0.32, Vector2.new(-28, 0))   -- the list "drops open": every row slides in after the one above it
+			b.MouseButton1Click:Connect(function()
+				curGroup, curPet, mode, statusMsg = g, nil, "info", ""
+				for k, o in pairs(listBtns) do
+					local on = (k == g.key)
+					tween(o.b, { BackgroundColor3 = on and Color3.fromRGB(70, 70, 70) or RUN_IDLE }, 0.15)
+					tween(o.st, { Color = on and C.iconFg or C.stroke, Thickness = on and 2 or 1 }, 0.15)
+				end
+				showCards()
+				renderDetail()
+			end)
+		end
+	end
+
+	refreshAll = function()
+		paintFilters()
+		showList()
+		showCards()
+		renderDetail()
+	end
+	refreshAll()
+
+	-- page entrance: the stage rises, the rarity buttons drop in one after the other. Replayed every time the page is opened.
+	local function playEntrance()
+		stage.Position = UDim2.fromOffset(0, 74)
+		tweenX(stage, { Position = UDim2.fromOffset(0, 56) }, 0.45, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+		for i, f in ipairs(FILTERS) do
+			local fb = filterBtns[f[1]]
+			if fb then fadeIn(fb, 0.06 * (i - 1), 0.35, Vector2.new(0, -14)) end
+		end
+	end
+	playEntrance()
+	-- live refresh (every 1.5 s while the page is open): the card texts and the selected pet panel follow the game's data,
+	-- so a slot that gets unlocked or rolled is shown by itself (the panel is only redrawn in its normal view, never while you pick enchants)
+	task.spawn(function()
+		while alive and host.Parent do
+			task.wait(1.5)
+			if isShown(host) and #cardObjs > 0 then
+				pcall(function()
+					local byId = {}
+					for _, pe in ipairs(readPets()) do byId[pe.id] = pe.p end
+					for _, o in ipairs(cardObjs) do
+						local fresh = byId[o.entry.id]
+						if fresh then
+							o.entry.p = fresh   -- the game may replace the pet's table, so always point at the current one
+							local sig = petSig(fresh)
+							if sig ~= o.sig then
+								o.sig = sig
+								if o.paintTexts then o.paintTexts() end
+								if curPet == o.entry and mode == "info" then renderDetail() end
+							end
+						end
+					end
+				end)
+			end
+		end
+	end)
+	local wasShown = isShown(host)
+	task.spawn(function()
+		while alive and host.Parent do
+			task.wait(0.25)
+			local now = isShown(host)
+			if now and not wasShown then pcall(playEntrance) end
+			wasShown = now
+		end
+	end)
 end
 
 ---------------------------------------------------------------- input
@@ -18098,11 +20063,137 @@ local function buildConfigList(row, entry)
 	refresh()
 end
 
+---------------------------------------------------------------- sell list (Trade > Sell > Pet Values): same look as the Configuration list
+-- One row per saved pet value: number, pet name, "Value: N tokens each", [Edit] and [x]. Edit turns the value into a box; Save writes it.
+-- The entry supplies items() (list of { key, name, value, stock, selling }), onEdit(key, value) and onDelete(key).
+local function buildSellList(row, entry)
+	row.AutomaticSize = Enum.AutomaticSize.Y   -- Size.Y (84) stays the minimum, the box grows with its entries
+	local RW = 1042                            -- width of an entry inside the box
+
+	local countLbl = label(row, "", RIGHT_X, 42, 16, C.sub, Enum.Font.GothamMedium, Enum.TextXAlignment.Right)
+	countLbl.Size = UDim2.fromOffset(240, 24)
+	frame(row, 20, 84, 1026, 1, C.stroke, 0.6)
+
+	local body = new("Frame", {
+		Position = UDim2.fromOffset(12, 98), Size = UDim2.fromOffset(RW, 0), AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1, BorderSizePixel = 0,
+	}, row)
+	new("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, body)
+	new("UIPadding", { PaddingBottom = UDim.new(0, 16) }, body)
+
+	-- Builds one row of the list.
+	local function mkItem(i, item)
+		local top = new("Frame", {
+			LayoutOrder = i, Size = UDim2.fromOffset(RW, 58), BackgroundColor3 = FIELD, BorderSizePixel = 0,
+		}, body)
+		corner(top, UDim.new(0, 14))
+		stroke(top, C.stroke, 1, 0.35)
+
+		badge(top, nil, tostring(i), 34, 29, 34)
+		local nm = label(top, item.name, 62, 20, 18, C.text, Enum.Font.GothamMedium)
+		nm.RichText = false
+		nm.Size = UDim2.fromOffset(420, 26)
+		local meta = "Value: " .. tostring(item.value) .. (item.value == 1 and " token each" or " tokens each")
+		meta = meta .. "  ·  " .. tostring(item.stock) .. " in inventory"
+		if item.selling then meta = meta .. "  ·  selling now" end
+		local sub = label(top, meta, 62, 41, 13, C.sub, Enum.Font.Gotham)
+		sub.Size = UDim2.fromOffset(420, 18)
+
+		local del = new("TextButton", {
+			AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.fromOffset(RW - 14, 29), Size = UDim2.fromOffset(36, 36),
+			BackgroundColor3 = FIELD, Text = "x", TextColor3 = C.sub, TextSize = 16, Font = Enum.Font.GothamMedium, AutoButtonColor = false,
+		}, top)
+		corner(del, UDim.new(0, 12))
+		stroke(del, C.stroke, 1, 0.3)
+
+		local editBtn = new("TextButton", {
+			AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.fromOffset(RW - 14 - 36 - 8, 29), Size = UDim2.fromOffset(104, 36),
+			BackgroundColor3 = RUN_IDLE, Text = "Edit", TextColor3 = Color3.new(1, 1, 1), TextSize = 16,
+			Font = Enum.Font.GothamMedium, AutoButtonColor = false,
+		}, top)
+		corner(editBtn, UDim.new(0, 12))
+		Config.polish(editBtn)
+
+		-- the value box that replaces the numbers while editing
+		local box = new("TextBox", {
+			AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.fromOffset(RW - 14 - 36 - 8 - 104 - 8, 29), Size = UDim2.fromOffset(170, 36),
+			BackgroundColor3 = Color3.fromRGB(18, 18, 18), BorderSizePixel = 0, ClearTextOnFocus = false, Visible = false,
+			Text = tostring(item.value), PlaceholderText = "new value", PlaceholderColor3 = Color3.fromRGB(109, 109, 109),
+			TextColor3 = C.text, TextSize = 16, Font = Enum.Font.Gotham, TextXAlignment = Enum.TextXAlignment.Left,
+		}, top)
+		corner(box, UDim.new(0, 12))
+		stroke(box, C.accent, 1, 0.2)
+		new("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }, box)
+		box:GetPropertyChangedSignal("Text"):Connect(function()
+			local cleaned = (box.Text:gsub("[^%d]", ""))
+			if cleaned ~= box.Text then box.Text = cleaned end
+		end)
+
+		local editing = false
+		-- Writes the new value (the list redraws itself when it worked).
+		local function commit()
+			local v = tonumber(box.Text)
+			local ok = v and v >= 1 and entry.onEdit and entry.onEdit(item.key, math.floor(v))
+			if not ok then
+				editBtn.Text = "Failed ✕"
+				tween(editBtn, { BackgroundColor3 = RUN_FAIL })
+				task.delay(1.2, function()
+					if alive and editBtn.Parent then
+						editBtn.Text = editing and "Save" or "Edit"
+						tween(editBtn, { BackgroundColor3 = RUN_IDLE })
+					end
+				end)
+			end
+		end
+		editBtn.MouseEnter:Connect(function() tween(editBtn, { BackgroundColor3 = RUN_HOVER }, 0.12) end)
+		editBtn.MouseLeave:Connect(function() tween(editBtn, { BackgroundColor3 = RUN_IDLE }, 0.12) end)
+		editBtn.MouseButton1Click:Connect(function()
+			if not editing then
+				editing = true
+				box.Text = tostring(item.value)
+				box.Visible = true
+				sub.Text = "Type the new value, then press Save (or Enter)."
+				editBtn.Text = "Save"
+				box:CaptureFocus()
+			else
+				commit()
+			end
+		end)
+		box.FocusLost:Connect(function(enterPressed) if enterPressed and editing then commit() end end)
+
+		del.MouseEnter:Connect(function() tween(del, { BackgroundColor3 = RUN_FAIL }) del.TextColor3 = Color3.new(1, 1, 1) end)
+		del.MouseLeave:Connect(function() tween(del, { BackgroundColor3 = FIELD }) del.TextColor3 = C.sub end)
+		del.MouseButton1Click:Connect(function() if entry.onDelete then entry.onDelete(item.key) end end)
+	end
+
+	-- Redraws the whole list.
+	local function refresh()
+		if not alive or not body.Parent then return end
+		for _, ch in ipairs(body:GetChildren()) do
+			if ch:IsA("GuiObject") then ch:Destroy() end
+		end
+		local ok, items = pcall(entry.items)
+		items = ok and type(items) == "table" and items or {}
+		countLbl.Text = #items == 1 and "1 saved" or (#items .. " saved")
+		if #items == 0 then
+			new("TextLabel", {
+				Size = UDim2.fromOffset(RW, 52), BackgroundTransparency = 1, TextColor3 = C.sub, TextSize = 16, Font = Enum.Font.Gotham,
+				Text = "No pet values yet. Pick a pet, type its value and press Save.",
+			}, body)
+			return
+		end
+		for i, item in ipairs(items) do mkItem(i, item) end
+	end
+
+	entry._refresh = refresh
+	refresh()
+end
+
 ---------------------------------------------------------------- page builder
 local builders = {
 	button = buildButton, toggle = buildToggle, slider = buildSlider, dropdown = buildDropdown,
 	input = buildInput, keybind = buildKeybind, webhook = buildWebhook,
-	configsave = buildConfigSave, configlist = buildConfigList,
+	configsave = buildConfigSave, configlist = buildConfigList, selllist = buildSellList,
 }
 
 -- Builds a tab page from its entries (rows or sub-pages).
@@ -18112,6 +20203,13 @@ local function buildScriptPage(tabName, entries)
 	-- builds the rows (one card per entry) inside a scrolling list
 	local function buildRows(list, rowEntries, idPrefix)
 		for i, entry in ipairs(rowEntries) do
+			if entry.type == "enchantgrid" then
+				-- Pets > Enchanting: a whole page of its own (pet card grid), not a single row
+				local gridHost = new("Frame", { LayoutOrder = i, Size = UDim2.fromOffset(1066, 580), BackgroundTransparency = 1, BorderSizePixel = 0 }, list)
+				entry._id = idPrefix .. "/" .. tostring(entry.name or i)
+				local okGrid, errGrid = pcall(Config.enchantGrid, gridHost, entry)
+				if not okGrid then warn("[WORST Hub] Enchanting page failed: " .. tostring(errGrid)) end
+			else
 			local row = new("Frame", {
 				LayoutOrder = i, Size = UDim2.fromOffset(1066, 84), BackgroundColor3 = C.card, BackgroundTransparency = CARD_T, BorderSizePixel = 0,
 			}, list)
@@ -18134,6 +20232,7 @@ local function buildScriptPage(tabName, entries)
 				build(row, entry)
 			else
 				warn("[WORST Hub] unknown control type: " .. tostring(entry.type))
+			end
 			end
 		end
 	end
@@ -18432,6 +20531,15 @@ for _, pg in ipairs(TAB_SCRIPTS.Settings.pages or {}) do
 			ID_ALIAS["Settings/" .. e.name] = "Settings/" .. pg.name .. "/" .. e.name
 			ID_ALIAS["Settings/Page 1/" .. e.name] = "Settings/" .. pg.name .. "/" .. e.name   -- pages were called Page 1 / Page 2
 			ID_ALIAS["Settings/Page 2/" .. e.name] = "Settings/" .. pg.name .. "/" .. e.name
+		end
+	end
+end
+
+-- Pets > Enchanting became the pet card grid; the old enchant controls moved to Pets > Auto Enchant (old saves still load)
+for _, pgE in ipairs((TAB_SCRIPTS.Pets and TAB_SCRIPTS.Pets.pages) or {}) do
+	if pgE.name == "Auto Enchant" then
+		for _, e in ipairs(pgE.entries) do
+			if e.name then ID_ALIAS["Pets/Enchanting/" .. e.name] = "Pets/Auto Enchant/" .. e.name end
 		end
 	end
 end
@@ -19144,6 +21252,7 @@ do
 		item(checksL, "delete", 28, 500, 112, 1, "Auto Delete Pets", "Common to Legendary, Normal to Rainbow,", "on every island.")
 		item(checksL, "hatch", 28, 500, 192, 2, "Auto Hatch + Auto Craft", "Hatches the latest detected egg and crafts Golden,", "Diamond and Rainbow, then collects Rainbow.")
 		item(checksL, "afk", 28, 500, 272, 3, "Anti AFK, Auto Rejoin, Status", "Switched on too. Everything runs in the", "order set in the Priority tab.")
+		item(checksL, "boosts", 28, 500, 352, 4, "Potions + Quests", "Auto Luck Potion, Auto Coins Potion and", "Auto Claim Quests are switched on.")
 
 		-- right: Kaitun Events
 		label(card, "What Kaitun Events does", 583, 34, 24, C.text, Enum.Font.GothamMedium)
@@ -19156,12 +21265,12 @@ do
 		-- middle, below both columns: Kaitun Stats
 		frame(card, 0, 462, 1066, 1, C.stroke)
 		local enchTitle = label(card, "What Kaitun Stats does", 533, 496, 24, C.text, Enum.Font.GothamMedium, Enum.TextXAlignment.Center)
-		label(card, "Needs Kaitun Hatch. Equips + rebirths, and enchants while you are hatching.", 533, 524, 16, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
+		label(card, "Needs Kaitun Hatch. Equips, and enchants while you are hatching.", 533, 524, 16, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
 		label(card, "1.)  Your equipped pets", 533, 566, 19, C.text, Enum.Font.GothamMedium, Enum.TextXAlignment.Center)
 		label(card, "Two Four-Leaf, two Secret Hunter, remaining Lucky III; one matching slot per pet.", 533, 592, 16, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
 		label(card, "2.)  The pets Richest equips before a rebirth", 533, 634, 19, C.text, Enum.Font.GothamMedium, Enum.TextXAlignment.Center)
 		label(card, "Renewal 3, once your equipped pets have their enchants.", 533, 660, 16, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
-		item(checksS, "rebirth", 283, 783, 700, 3, "Auto Equip + Auto Rebirth", "Luckiest pets while hatching, Richest pets right before each rebirth,", "rebirths with the Best amount you can afford.")
+		item(checksL, "rebirth", 283, 783, 700, 3, "Auto Rebirth (+ Auto Equip)", "Runs with Kaitun Hatch: the most expensive amount you can afford, only with enough coins.", "Auto Equip (Luckiest / Richest pets) needs Kaitun Stats.")
 		label(card, "If Kaitun Hatch is off, a pop up asks you to run it first and the toggle switches itself off again.", 533, 776, 14, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
 
 		task.spawn(function()
@@ -20337,7 +22446,7 @@ end)
 
 
 ------------------------------------------------------------------ 3D RENDERING OFF
--- Used by Settings > Ui > "Disable 3D Rendering" and by the Mini Ui (always off while it is open). The screen turns solid black and
+-- Used by Settings > Ui > "Disable 3D Rendering" only (the Mini Ui does not touch 3D rendering). The screen turns solid black and
 -- your username is shown in the middle of it. Everything of the hub stays above the black layer (ZIndex 0 = lowest).
 do
 	local RunSvc = game:GetService("RunService")
@@ -20433,7 +22542,7 @@ do
 	local last = nil
 	record.apply3d = function()
 		if not alive then return end
-		local off = Config.render3dOff == true or record.liteActive == true
+		local off = Config.render3dOff == true
 		black.Visible, stack.Visible = off, off
 		if off then pcall(refreshInfo) end
 		if off ~= last then
@@ -20453,15 +22562,13 @@ end
 
 ------------------------------------------------------------------ LITE MODE
 -- Only while NOTHING has been toggled by hand since the script was executed (record.userToggled stays false):
---   hub left alone for IDLE_SECS  ->  "Are you afk?" popup  ->  [No] closes it and restarts the timer
---   popup ignored for AFK_SECS    ->  main window closes, a small window opens with Kaitun Hatch + Kaitun Stats (both switched on; Kaitun Events is not)
+--   hub left alone for IDLE_SECS (60 s)  ->  the hub shrinks away and a small window opens with Kaitun Hatch + Kaitun Stats (both switched on; Kaitun Events is not)
 -- Any press / scroll on the hub, minimizing, or an open dialog counts as activity. Toggling anything yourself (also in the
--- Lite window) turns this watcher off for good. While the Lite window is open the FPS cap is forced to 5. The Lite window has a "Full UI" button (or press the minimize key) to go back.
+-- Lite window) turns this watcher off for good. The Lite window does not touch the FPS or 3D rendering. It has a "Full UI" button (or press the minimize key) to go back.
 -- Everything lives inside one function so it does not use up the script's local-variable limit.
 task.spawn(function()
-	local IDLE_SECS = 60   -- no interaction with the hub for this long -> popup
-	local AFK_SECS  = 60   -- popup ignored for this long -> Lite window
-	local AUTO_LITE = false   -- false = the "Are you afk?" popup and the automatic switch never happen: the Mini Ui only opens from Settings > Mini Ui
+	local IDLE_SECS = 60   -- no interaction with the hub for this long since the script was executed -> the Mini Ui opens by itself
+	local AUTO_LITE = true   -- true = the hub shrinks into the Mini Ui by itself after IDLE_SECS without interaction (false = only Settings > Mini Ui opens it)
 
 	local kt = Logic and Logic.kaitun
 	if not (kt and kt.main and kt.second) then
@@ -20690,14 +22797,11 @@ task.spawn(function()
 		if closeOpenDropdown then pcall(closeOpenDropdown) end
 		window.Visible = false   -- every window animation / refresh loop checks this and stops
 		lite.Visible = true
-		if record.apply3d then record.apply3d() end   -- Mini Ui: 3D rendering off, black screen + username
-		if grow then   -- opened from Settings > Mini Ui: the small window pops open (the 5 FPS cap only starts once it has finished)
+		if grow then   -- opened from Settings > Mini Ui: the small window pops open 
 			liteScale.Scale = 0.05
 			tw(liteScale, { Scale = 1 }, 0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
-			-- no FPS cap in Mini Ui any more (Config.fps.lite stays false)
 		else
 			liteScale.Scale = 1
-			-- no FPS cap in Mini Ui any more
 		end
 		pcall(function() if kt.main._setUI then kt.main._setUI(true) end end)     -- no-op when it is already on
 		pcall(function() if kt.enchant and kt.enchant._setUI then kt.enchant._setUI(true) end end)   -- Kaitun Events stays as it is: switch it on yourself if you want it
@@ -20707,11 +22811,8 @@ task.spawn(function()
 	record.exitLite = function()
 		if not record.liteActive then return end
 		record.liteActive = false
-		if record.apply3d then record.apply3d() end   -- back to the full UI: 3D rendering on again (unless the Settings toggle keeps it off)
 		lite.Visible = false
 		window.Visible = true
-		Config.fps.lite = false     -- back to the FPS Cap slider value
-		Config.applyFps()
 		Config.statusHideUntil = math.max(Config.statusHideUntil or 0, os.clock() + 60)   -- Show Status stays hidden for 1 minute after returning to the full UI
 		lastActive = os.clock()
 	end
@@ -20773,18 +22874,11 @@ task.spawn(function()
 				or window:FindFirstChild("IntroBlocker") ~= nil
 			if busy then
 				lastActive = os.clock()
-				if popup.Visible then popup.Visible, popupAt = false, nil end
-			elseif popupAt then
-				local left = math.ceil(AFK_SECS - (os.clock() - popupAt))
-				if left <= 0 then
-					enterLite()
-				else
-					popSub.Text = string.format("Switching to the Lite UI in %ds", left)
-				end
 			elseif os.clock() - lastActive >= IDLE_SECS then
-				popupAt = os.clock()
-				popSub.Text = string.format("Switching to the Lite UI in %ds", AFK_SECS)
-				popup.Visible = true
+				-- afk: the hub shrinks away and the Mini Ui opens (only once; after you come back to the full UI it stays out of your way)
+				local okMini, opened = pcall(function() return record.miniUi and record.miniUi() end)
+				if okMini and opened then break end
+				lastActive = os.clock()
 			end
 		end
 		popup.Visible, popupAt = false, nil
