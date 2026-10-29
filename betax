@@ -46,6 +46,20 @@
 --//     status, priority order, who holds the machine lock, what blocks Craft, trade state, FPS / ping, last warnings) plus automatic flags (inventory full, craft blocked,
 --//     machine lock held too long, craft status frozen ...). Link and switches: DBG_WEBHOOK / DBG_ON next to the inventory webhook.
 --// 25. Inventory Discord embed now shows the current server Job ID above the pet list, ready to copy into Miscellaneous > Join Job ID.
+--// 26. Pets > Enchanting is now a pet card grid (rarity buttons -> pet type -> one card per pet; click a card for Select Enchant / Rename Pet). The old controls (Auto Enchant, Enchant V2 ...) moved to Pets > Auto Enchant. Visual only for now.
+--// 27. Pets > Enchanting fix: pet cards are registered the moment they are created, their texts are built before the icon, the icon is drawn in its own thread
+--//     (the game's PetCardRenderer can stall, which left blank orphan cards, a frozen status line and a rarity button showing the pet label); errors now show in the status box.
+--// 28. Pets > Enchanting redesigned (that page only): 4 plain steps - rarity buttons, pet type list, pet cards, selected pet panel (slots, Select Enchant = tick the enchants you want, Rename Pet).
+--//     No dropdowns / animations any more. Select Enchant keeps the choice in Config.enchantWanted[pet id]; Rename is not connected to the game yet.
+--// 29. Pets > Enchanting now enchants: toggle next to "4 SELECTED PET"; every pet with enchants chosen joins a queue (#1, #2 ... badge on the card) and is rolled with the game's
+--//     own auto roll (SetFilters -> AutoStart -> Claim) slot by slot until it holds a chosen enchant, then the next pet follows. Rare enchants are never rolled over; it waits while
+--//     Auto Enchant / Enchant V2 / Kaitun is rolling. Rename Pet is wired to PetService.RF.SetNickname.
+--// 30. Pets > Enchanting is animated (that page only): rarity buttons drop in, the pet type list slides in one row after the other when a rarity button is pressed,
+--//     pet cards pop in with a stagger, the selected pet panel slides in, buttons / rows / cards react to hover + press, the selected card and the running toggle pulse,
+--//     queue badges pop in, the page replays its entrance every time you open it. "Replace rare enchants" now sits below "Rename Pet".
+--// 31. FPS Cap removed completely (the Settings slider, Config.fps / applyFps / fpsEvent and the Dig FPS boost): the script never touches the FPS any more.
+--//     The Mini Ui no longer switches 3D rendering off (no black screen); only Settings > Ui > Disable 3D Rendering does that.
+--//     The Mini Ui opens by itself after IDLE_SECS (60 s) without any interaction with the hub since the script was executed (AUTO_LITE = true, no "Are you afk?" popup).
 --// =====================================================================================================
 --// WORST Hub - Auto Hatch (Hatch tab) + Auto Craft (Pets tab)
 --// Execute as a normal script. Executing again closes the previous instance first.
@@ -71,13 +85,11 @@
 --//                  page [Dig] -> "Auto Dig" (Autumn dig spot, hits the timing bar by itself, max 10 digs per hour; Kaitun Hatch/Events no longer switch it on)
 --// Trade tab    : "Choose Pets" dropdown ("+  pet  -" rows: left click = +1, right click = -1, + / - buttons for touch) + "Tokens They Must Pay" + "Auto Trade (Pay First)" -> accepts requests, offers exactly those pets and only Locks / Confirms once the other player's offer reaches the amount
 --// Priority tab : Double Jump first; Craft, Auto Balloons, Auto Trick or Treat, Auto Kill Hallow Lord, Auto Dig and Hatch (saved in WORST/priority.txt)
---// LITE MODE   : (automatic switching is OFF: AUTO_LITE = false near the end of the file. The Mini Ui only opens from Settings > Mini Ui.) Old behaviour: if nothing was toggled by hand since execute and the hub is left alone for 60 s, an "Are you afk?" popup shows; ignore it for another 60 s and the
---//                  main window closes and a small window (Kaitun Hatch + Kaitun Stats switched on; Kaitun Events is yours to switch on) opens. Times: IDLE_SECS / AFK_SECS near the end of the file.
---// Settings tab : two pages (General / Ui). Ui = Animated Background, Minimize Keybind, Auto Save Configuration, Show Status, Auto Rejoin, Anti AFK, Save Configuration, Configuration List,
---//                  FPS Cap; General = everything else. "Reset Script" is a button at the top right of the tab.
+--// LITE MODE   : if nothing was toggled by hand since execute and the hub is left alone for 60 s, the hub shrinks away and the small Mini Ui opens by itself (Kaitun Hatch + Kaitun Stats
+--//                  switched on; Kaitun Events is yours to switch on). It does not touch the FPS or 3D rendering. Time: IDLE_SECS near the end of the file (AUTO_LITE = false turns it off).
+--// Settings tab : two pages (General / Ui). Ui = Animated Background, Minimize Keybind, Auto Save Configuration, Show Status, Auto Rejoin, Anti AFK, Save Configuration, Configuration List;
+--//                  General = everything else. "Reset Script" is a button at the top right of the tab.
 --//                  "Minimize Keybind" -> click it, press any key, that key now minimizes / restores the hub (default Left Ctrl)
---//                  "FPS Cap" slider -> limits your FPS (Off = no limit, needs setfpscap). While the small Lite window is open the cap is forced to 5 FPS
---//                  and the slider value is put back when you return to the full UI. Normal Kaitun (full UI) only uses the slider.
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
@@ -1045,10 +1057,6 @@ end
 local Config = {}
 Config.override  = {}   -- control id -> value that is SAVED instead of the live one (Kaitun Hatch owns those controls while it is on)
 Config.pageLists = {}   -- tab name -> the scrolling list of a one-page tab
--- FPS cap: the Settings slider sets .user (0 = Off); the Lite window sets .lite = true (forced to LITE_CAP)
--- .event = true while an event feature (Trick or Treat, Hallow Lord, Dig, Balloons, Pet Defense, Double Jump) is on its trip: the Lite window then
--- runs at EVENT_CAP instead of LITE_CAP (5 FPS is too low: the character jumps several times before it even lands).
-Config.fps = { user = 0, touched = false, lite = false, active = false, LITE_CAP = 0, EVENT_CAP = 0, event = false }   -- Mini Ui no longer limits FPS (0 = no limit)
 Config.execName = function()   -- the executor's name as it reports itself ("Unknown" when it doesn't)
 	local name = "Unknown"
 	pcall(function()
@@ -1059,44 +1067,7 @@ Config.execName = function()   -- the executor's name as it reports itself ("Unk
 	end)
 	return name
 end
-Config.fpsFn = function()   -- the executor's FPS cap function (some mobile executors only have one of the other names)
-	-- Delta: no FPS cap at all (checked first, before any cap function is looked up), so the cap does nothing there
-	if string.find(string.lower(Config.execName()), "delta", 1, true) then return nil end
-	if typeof(setfpscap) == "function" then return setfpscap end
-	if typeof(set_fps_cap) == "function" then return set_fps_cap end
-	if typeof(setfps) == "function" then return setfps end
-	-- no cap function at all: set Roblox's own FPS target through the fast flags instead. 0 = back to the value it had.
-	if typeof(setfflag) == "function" then
-		return function(n)
-			n = math.floor(tonumber(n) or 0)
-			Config.fpsOrig = Config.fpsOrig or (function()
-				if typeof(getfflag) ~= "function" then return false end
-				local ok, v = pcall(getfflag, "DFIntTaskSchedulerTargetFps")
-				return ok and tostring(v) ~= "" and tostring(v) or false
-			end)()
-			local v = n > 0 and tostring(n) or (Config.fpsOrig or "9999")
-			pcall(setfflag, "DFIntTaskSchedulerTargetFps", v)   -- the executors accept one of these two spellings
-			pcall(setfflag, "TaskSchedulerTargetFps", v)
-		end
-	end
-	return nil
-end
-Config.applyFps = function()
-	local f = Config.fps
-	local fn = Config.fpsFn()
-	if not fn then return end
-	if not (f.lite or f.touched or f.active) then return end   -- never touch the cap unless the slider / Lite window needs it
-	f.active = true
-	pcall(fn, f.lite and (f.event and f.EVENT_CAP or f.LITE_CAP) or f.user)
-end
-Config.fpsEvent = function(on)
-	Config.fps.event = on == true
-	if Config.fps.lite then Config.applyFps() end
-end
-table.insert(cleanupHooks, function()   -- closing / re-executing the hub puts the cap back to "no limit"
-	local fn = Config.fpsFn()
-	if Config.fps.active and fn then pcall(fn, 0) end
-end)
+-- (the FPS cap was removed: the script never changes the FPS)
 local controls = {}
 
 ------------------------------------------------------------------ HATCH + CRAFT LOGIC
@@ -2063,7 +2034,6 @@ local function buildLogic()
 	-- HG.want = the Auto Hatch toggle as you set it; the hatch itself is started / paused automatically from it.
 	local tripOwner = nil   -- who is on a machine trip right now (only one at a time)
 	local HG = { want = false, waiting = {}, order = { "DoubleJump", "Balloon", "Craft", "TrickOrTreat", "HallowLord", "PetDefense", "Dig", "Hatch" } }   -- waiting[name] = rank of a feature queued for the machine
-	HG.fpsEvents = { Halloween = true, HalloweenBoss = true, PetDefense = true, Dig = true, Balloon = true, DoubleJump = true }   -- trips that need more than the Mini Ui's 5 FPS
 	HG.rank = function(kind)
 		for i, k in ipairs(HG.order) do if k == kind then return i end end
 		return 99
@@ -2330,7 +2300,6 @@ local function buildLogic()
 			if not why then
 				tripOwner = name
 				HG.waiting[name] = nil
-				if HG.fpsEvents[name] then Config.fpsEvent(true) end   -- Mini Ui: 30 FPS for the whole event trip (5 FPS makes jumps glitch)
 				HG.sync()
 				return true
 			end
@@ -2348,7 +2317,6 @@ local function buildLogic()
 	local function releaseTrip(name)
         if tripOwner == name then
             tripOwner = nil
-            if HG.fpsEvents[name] then Config.fpsEvent(false) end
         end
         HG.sync() -- hatch comes back only when nothing else is running or waiting
     end
@@ -9444,24 +9412,6 @@ local function buildLogic()
 				if botConn then pcall(function() botConn:Disconnect() end) botConn = nil end
 			end
 
-			-- the Lite window caps the FPS at 5, far too low to time the bar: lift the cap while a dig is running
-			local boosted = false
-			-- Lowers or restores the FPS cap while digging (the timing bar needs a smooth game).
-			local function boost(on)
-				local capFn = Config.fpsFn()
-				if not capFn then return end
-				if on then
-					local f = Config.fps
-					if f.lite or (f.touched and f.user > 0 and f.user < 60) then
-						pcall(capFn, 60)
-						boosted = true
-					end
-				elseif boosted then
-					boosted = false
-					Config.applyFps()
-				end
-			end
-
 			---------------------------------------------------------------- wait for the server's actual dig window
 			local function waitForSlot(id)
 				while dActive(id) do
@@ -9535,7 +9485,6 @@ local function buildLogic()
 							waitAfter = 10
 							break
 						end
-						boost(true)   -- no FPS cap while pressing / digging (released when the visit ends)
 						say(string.format("At Dig CFrame | pressing in %gs...", PRESS_DELAY))
 						dSleep(id, PRESS_DELAY)   -- press the screen PRESS_DELAY seconds after reaching the CFrame
 						if not dActive(id) then break end
@@ -9608,7 +9557,6 @@ local function buildLogic()
 						dSleep(id, NEXT_WAIT)
 					end
 				end)
-				boost(false)
 				releaseTrip("Dig")
 				if not ok then error(err, 0) end
 				if waitAfter then
@@ -9647,8 +9595,7 @@ local function buildLogic()
 				else
 					stopBot()
 					dropListener()
-					boost(false)
-					releaseTrip("Dig")
+						releaseTrip("Dig")
 					say(DESC)
 				end
 			end
@@ -9658,7 +9605,6 @@ local function buildLogic()
 				dRun = dRun + 1
 				stopBot()
 				dropListener()
-				boost(false)
 			end)
 
 			return { toggle = toggle }
@@ -15254,8 +15200,9 @@ local TAB_SCRIPTS = {
 				Logic.collect,
 			},
 		},
+		{ name = "Enchanting", entries = { { type = "enchantgrid", name = "Enchanting" } } },
 		{
-			name = "Enchanting",
+			name = "Auto Enchant",
 			entries = (Logic.enchant and {
 				Logic.enchant.pet,
 				Logic.enchant.target, Logic.enchant.slot,
@@ -15335,16 +15282,6 @@ local TAB_SCRIPTS = {
 			desc = "Click the box, then press any key. Default: Left Ctrl.",
 		},
 		{
-			type = "slider", name = "FPS Cap", icon = "🕐", min = 0, max = 240, default = 0, step = 5,
-			format = function(v) return v == 0 and "Off" or tostring(v) end,
-			desc = "Limits your FPS to this value (Off = no limit). The Mini Ui does not limit FPS. Needs an executor with setfpscap.",
-			callback = function(v)
-				Config.fps.user = tonumber(v) or 0
-				Config.fps.touched = true
-				Config.applyFps()
-			end,
-		},
-		{
 			type = "configsave", name = "Save Configuration", icon = "💾", noSave = true,
 			desc = "Type a name, then Save to add it to the list below.",
 		},
@@ -15393,7 +15330,7 @@ local TAB_SCRIPTS = {
 		},
 		{
 			type = "button", name = "Mini Ui", icon = "📱", noSave = true,
-			desc = "Shrinks the hub away and opens the small Mini Ui (Kaitun Hatch + Kaitun Stats switch on; Kaitun Events only if you switch it on). 3D rendering is switched off while it is open (black screen with your username, what it is doing, hatches, rarest pet, ping and FPS in the middle); its [-] button hides the toggles. Use its Full UI button, or the minimize key, to come back.",
+			desc = "Shrinks the hub away and opens the small Mini Ui (Kaitun Hatch + Kaitun Stats switch on; Kaitun Events only if you switch it on). It does not change the FPS or 3D rendering; its [-] button hides the toggles. Use its Full UI button, or the minimize key, to come back.",
 			run = function()
 				local f = record.miniUi
 				if not f then return false, "Mini Ui isn't available (the Kaitun controls were not found)" end
@@ -15403,7 +15340,7 @@ local TAB_SCRIPTS = {
 		{
 			-- TOGGLE "Disable 3D Rendering": Turns 3D rendering off: the screen goes black and your username, current action, hatches, rarest pet, ping and FPS are shown in the middle.
 			type = "toggle", name = "Disable 3D Rendering", icon = "🖥", default = false,
-			desc = "Turns 3D rendering off: the screen goes black and your username, current action, hatches, rarest pet, ping and FPS are shown in the middle. Saves GPU / CPU while you farm. The Mini Ui switches it off by itself while it is open.",
+			desc = "Turns 3D rendering off: the screen goes black and your username, current action, hatches, rarest pet, ping and FPS are shown in the middle. Saves GPU / CPU while you farm. Only this toggle switches it on (the Mini Ui does not).",
 			callback = function(on)
 				Config.render3dOff = on == true
 				if record.apply3d then record.apply3d() end
@@ -15445,7 +15382,7 @@ end
 -- the Settings tab has two pages. Ui = the entries listed here (in this order), General = everything else.
 -- (Reset Script is not a row any more: it is a button at the top right of the tab, see buildScriptPage.)
 do
-	local PAGE2 = { "Animated Background", "Minimize Keybind", "Auto Save Configuration", "Show Status", "Mini Ui", "Disable 3D Rendering", "Auto Rejoin", "Anti AFK", "Save Configuration", "Configuration List", "FPS Cap" }
+	local PAGE2 = { "Animated Background", "Minimize Keybind", "Auto Save Configuration", "Show Status", "Mini Ui", "Disable 3D Rendering", "Auto Rejoin", "Anti AFK", "Save Configuration", "Configuration List" }
 	local isP2, byName, p1, p2 = {}, {}, {}, {}
 	for _, n in ipairs(PAGE2) do isP2[n] = true end
 	for _, e in ipairs(TAB_SCRIPTS.Settings) do
@@ -17252,6 +17189,1067 @@ local function buildDropdown(row, entry)
 	})
 end
 
+---------------------------------------------------------------- Pets > Enchanting: pet browser (rewritten to be simple)
+-- Four steps, left to right: 1) rarity buttons on top  2) pet type list  3) your pets of that type (cards)  4) the selected pet:
+-- its enchants, "Select Enchant" (choose the enchants you want), "Rename Pet" and "Replace rare enchants". Everything is always on screen and animated (see the animation helpers below).
+function Config.enchantGrid(host, entry)
+	local RSv = game:GetService("ReplicatedStorage")
+	local CARD_W, CARD_H, CIRCLE, MAX_CARDS = 152, 190, 70, 90
+	local okR, Renderer = pcall(function() return require(RSv.Modules.Client.Pets.PetCardRenderer) end)
+	local okEC, EC = pcall(function() return require(RSv.Shared.Pets.EnchantConfig) end)
+	Config.enchantReplace = Config.enchantReplace or {}   -- pet id -> true: this pet's rare / III enchants may be rolled over (default: never)
+	Config.enchantSlot = Config.enchantSlot or {}   -- pet id -> 1 / 2 / "both" (which slot the chosen enchants go on; default both)
+	Config.enchantWanted = Config.enchantWanted or {}   -- pet id -> { enchant name = true }  (what you chose with "Select Enchant"; ready for the rolling logic)
+
+	------------------------------------------------ pet data
+	local RANK = { common = 1, uncommon = 2, rare = 3, epic = 4, legendary = 5, mythic = 6, mythical = 6, godly = 7 }
+	local function rarityRank(r)
+		r = tostring(r or ""):lower()
+		if r:find("secret") then return 100 end
+		return RANK[r] or 0
+	end
+	local function shownTier(t)
+		t = tostring(t or "Normal")
+		if t == "Shiny" then return "Rainbow" end   -- the game's data calls Rainbow pets "Shiny"
+		return t
+	end
+	local function enchName(v)
+		if v == nil then return nil end
+		if type(v) == "string" then return v ~= "" and v or nil end
+		if type(v) == "table" then return tostring(v.Name or v.Id or "?") end
+		return tostring(v)
+	end
+	local function slotCount(p)
+		if okEC and EC and EC.GetSlotCount then
+			local ok, c = pcall(EC.GetSlotCount, p)
+			if ok and tonumber(c) then return math.clamp(math.floor(c), 1, 2) end
+		end
+		return 2
+	end
+	local function readPets()
+		local out = {}
+		local ok, data = pcall(function() return require(RSv.Controllers.Core.DataController):GetReplica().Data end)
+		if ok and type(data) == "table" and type(data.Pets) == "table" and type(data.Pets.Owned) == "table" then
+			for id, p in pairs(data.Pets.Owned) do
+				if type(p) == "table" and p.Name then out[#out + 1] = { id = tostring(p.Id or id), p = p } end
+			end
+		end
+		return out
+	end
+	local FILTERS = { { "lo", "Mythical -" }, { "hi", "Mythical +" }, { "sec", "Secret" }, { "all", "All" } }
+	local function inFilter(filter, rk)
+		return filter == "all" or (filter == "lo" and rk >= 1 and rk <= 6) or (filter == "hi" and rk >= 6 and rk <= 7) or (filter == "sec" and rk == 100)
+	end
+	-- groups the pets of one rarity button by name + variety (3 identical Secrets = one entry "x3")
+	local function buildGroups(filter, pets)
+		local map, list = {}, {}
+		for _, e in ipairs(pets) do
+			local p = e.p
+			local rk = rarityRank(p.Rarity)
+			if inFilter(filter, rk) then
+				local key = tostring(p.Name) .. "|" .. tostring(p.Tier or "Normal")
+				local g = map[key]
+				if not g then
+					g = { key = key, name = p.Name, tier = p.Tier or "Normal", rank = rk, pets = {} }
+					map[key] = g
+					list[#list + 1] = g
+				end
+				g.pets[#g.pets + 1] = e
+			end
+		end
+		table.sort(list, function(a, b)
+			if a.rank ~= b.rank then return a.rank > b.rank end
+			if a.name ~= b.name then return a.name < b.name end
+			return tostring(a.tier) < tostring(b.tier)
+		end)
+		for _, g in ipairs(list) do
+			table.sort(g.pets, function(a, b) return (tonumber(a.p.Power) or 0) > (tonumber(b.p.Power) or 0) end)
+		end
+		return list
+	end
+
+	------------------------------------------------ the enchant queue + runner
+	-- Every pet that has enchants chosen ("Select Enchant") is put in the queue in the order you chose them. While the toggle is on, the first pet
+	-- that still needs work is rolled with the game's own server-side auto roll (EnchantService: SetFilters -> AutoStart -> Stop event -> Claim),
+	-- one slot after the other, until the slots hold one of the chosen enchants. Then the next pet in the queue is done.
+	local queue = {}                  -- ordered { id, name, tier }
+	local runOn, runId, ours = false, 0, false   -- toggle state / current run / true while a roll started by THIS page is going
+	local liveStatus, lastResult, rolls = "Off", "", 0
+	local skip, failCount = {}, {}    -- "petId:slot" -> true (slot is not rolled) / unexpected stops in a row
+	local updateLive = function() end -- replaced once the labels exist
+	local paintSwitch = function() end
+	local paintCards, showCards       -- defined further down
+	local function say(s) liveStatus = tostring(s); updateLive() end
+
+	local ES = (function()
+		local rs = RSv:FindFirstChild("RemoteServices")
+		return rs and rs:FindFirstChild("EnchantService")
+	end)()
+	local RF = ES and ES:FindFirstChild("RF")
+	local RE = ES and ES:FindFirstChild("RE")
+	local REASON = {
+		Connection = "Connection interrupted", DataUnavailable = "Your data is still loading", Reserved = "That pet is being traded",
+		ConfirmReplace = "Needs a replace confirmation", ClaimFirst = "A pet is still in the enchanter", AutoRunning = "Another auto enchant is running",
+		InsufficientGems = "Not enough gems", InvalidSlot = "That pet can't use that slot", ChoosePendingEnchant = "Finishing the last roll first",
+		VisitEnchantMachine = "Not at the Enchant Machine", EnchantPending = "Finish the current enchant first", NoFilters = "No filters selected",
+		PetChangedChooseKeep = "The pet changed since that roll", Frozen = "That pet is unavailable", UnknownPet = "That pet is no longer available",
+		RateLimited = "Rate limited", NoRemote = "Remote not found",
+	}
+	-- one remote call: returns the result table, or nil + reason
+	local function rf(name, args)
+		local r = RF and RF:FindFirstChild(name)
+		if not r then return nil, "NoRemote" end
+		local ok, res = pcall(function()
+			if args == nil then return r:InvokeServer() end
+			return r:InvokeServer(args)
+		end)
+		if not ok then return nil, "Connection" end
+		if type(res) == "table" and res.Success then return res end
+		return nil, (type(res) == "table" and res.Reason) or "Unknown"
+	end
+	local stopEvent = nil
+	local evSig = RE and RE:FindFirstChild("AutoEvent")
+	if evSig then
+		connect(evSig.OnClientEvent, function(d)
+			if type(d) ~= "table" then return end
+			if d.Kind == "Stop" then stopEvent = d elseif d.Kind == "Roll" then rolls = rolls + 1 end
+		end)
+	end
+	table.insert(cleanupHooks, function()
+		runOn = false
+		runId = runId + 1
+		if ours then task.spawn(function() pcall(rf, "AutoStop") end) end
+	end)
+
+	local function ownedMap()
+		local ok, data = pcall(function() return require(RSv.Controllers.Core.DataController):GetReplica().Data end)
+		local o = ok and type(data) == "table" and data.Pets and data.Pets.Owned
+		return type(o) == "table" and o or nil
+	end
+	local function isProtected(n)
+		if okEC and EC and EC.IsProtected then
+			local ok, r = pcall(EC.IsProtected, n)
+			return ok and r == true
+		end
+		return false
+	end
+	-- only enchants the game accepts as a roll filter (the same rule Auto Enchant uses); anything else makes SetFilters fail with "InvalidFilter"
+	local function isFilterable(n)
+		if okEC and EC and EC.IsFilterable then
+			local ok, r = pcall(EC.IsFilterable, n)
+			return ok and r == true
+		end
+		return true
+	end
+	local function rankOf(n)
+		if okEC and EC and EC.RankOf then
+			local ok, r = pcall(EC.RankOf, n)
+			if ok and tonumber(r) then return tonumber(r) end
+		end
+		return 0
+	end
+	local function slotChoice(id) return Config.enchantSlot[id] or "both" end
+	local function slotLabel(id)
+		local c = slotChoice(id)
+		return c == "both" and "both slots" or ("slot " .. tostring(c))
+	end
+	local function slotVal(p, slot) return enchName(slot == 2 and p.Enchant2 or p.Enchant) end
+	local function wantedNames(id)
+		local l = {}
+		for n in pairs(Config.enchantWanted[id] or {}) do
+			if isFilterable(n) then l[#l + 1] = n end
+		end
+		table.sort(l)
+		return l
+	end
+	-- puts the pet in / takes it out of the queue after its chosen enchants changed
+	local function syncQueue(id, p)
+		local w = Config.enchantWanted[id]
+		local pos
+		for i, q in ipairs(queue) do if q.id == id then pos = i break end end
+		if w and next(w) then
+			if not pos then queue[#queue + 1] = { id = id, name = tostring(p.Nickname or p.Name), tier = p.Tier } end
+		elseif pos then
+			table.remove(queue, pos)
+		end
+		skip[id .. ":1"], skip[id .. ":2"] = nil, nil
+		updateLive()
+	end
+
+	-- the first queued pet (and slot) that still needs work. Finished pets leave the queue. Rare (protected) enchants are never rolled over.
+	local function nextJob()
+		local owned = ownedMap()
+		if not owned then return nil, "Couldn't read your pets" end
+		local i = 1
+		while i <= #queue do
+			local q = queue[i]
+			local p = owned[q.id]
+			local w = Config.enchantWanted[q.id]
+			if not p or not w or next(w) == nil or #wantedNames(q.id) == 0 then
+				table.remove(queue, i)
+			else
+				local job
+				local choice, maxSlot, slotList = slotChoice(q.id), (slotCount(p) >= 2 and 2 or 1), {}
+				if choice == "both" then
+					for sl = 1, maxSlot do slotList[#slotList + 1] = sl end
+				elseif choice == 2 then
+					if maxSlot >= 2 then slotList[1] = 2 else lastResult = q.name .. ": slot 2 is locked" end
+				else
+					slotList[1] = 1
+				end
+				for _, slot in ipairs(slotList) do
+					local cur = slotVal(p, slot)
+					if not (cur and w[cur] and isFilterable(cur)) and not skip[q.id .. ":" .. slot] then
+						if cur and isProtected(cur) and not Config.enchantReplace[q.id] then
+							skip[q.id .. ":" .. slot] = true
+							lastResult = q.name .. ": slot " .. slot .. " keeps its rare " .. cur .. " (switch on Replace rare to roll over it)"
+						else
+							job = slot
+							break
+						end
+					end
+				end
+				if job then return q, p, job end
+				if lastResult:find(q.name, 1, true) ~= 1 then lastResult = q.name .. " is done" end
+				table.remove(queue, i)
+			end
+		end
+		return nil
+	end
+
+	local function current(my) return alive and runOn and runId == my end
+	-- takes the pet out of the enchanter
+	local function claimHeld()
+		local t0 = os.clock()
+		while alive and os.clock() - t0 < 10 do
+			if player:GetAttribute("EnchantHeldPet") == nil then return true end
+			if rf("Claim") then return true end
+			task.wait(0.7)
+		end
+		return player:GetAttribute("EnchantHeldPet") == nil
+	end
+	local function resolvePending()
+		local st = rf("GetState")
+		local en = st and st.Enchanting
+		local pend = en and en.Pending
+		if type(pend) == "table" and pend.Token then rf("Resolve", { Token = pend.Token, UseNew = true }) end
+	end
+
+	-- rolls one slot of one pet until a chosen enchant lands
+	local function runJob(my, q, p, slot)
+		local label = q.name .. " (slot " .. slot .. ")"
+		if player:GetAttribute("EnchantAutoPet") ~= nil or player:GetAttribute("EnchantHeldPet") ~= nil then
+			-- somebody else's roll is running (Auto Enchant / Enchant V2 / Kaitun): never touch its filters, just wait
+			if player:GetAttribute("EnchantAutoPet") == nil then claimHeld() else say("Another enchant feature is rolling - waiting for it") end
+			task.wait(2)
+			return
+		end
+		local names = wantedNames(q.id)
+		local sres, sreason = rf("SetFilters", names)
+		if not sres then
+			say("Couldn't set the enchants (" .. table.concat(names, ", ") .. "): " .. (REASON[sreason] or tostring(sreason)))
+			local k = q.id .. ":" .. slot
+			failCount[k] = (failCount[k] or 0) + 1
+			if failCount[k] >= 3 then skip[k] = true end
+			task.wait(2)
+			return
+		end
+		local started = false
+		for _ = 1, 6 do
+			if not current(my) then return end
+			local args = { PetId = q.id, Slot = slot }
+			local curE = slotVal(p, slot)
+			if curE and Config.enchantReplace[q.id] and isProtected(curE) then args.Replace = curE end   -- the game wants the old rare enchant named
+			local res, reason = rf("AutoStart", args)
+			if res then started = true; break end
+			if reason == "InsufficientGems" then
+				runOn = false; paintSwitch(); say("Stopped: not enough gems"); return
+			elseif reason == "AutoRunning" then
+				say("Another enchant feature is rolling - waiting for it"); task.wait(2); return
+			elseif reason == "ClaimFirst" then
+				claimHeld()
+			elseif reason == "ChoosePendingEnchant" or reason == "EnchantPending" then
+				resolvePending(); task.wait(0.5)
+			elseif reason == "RateLimited" or reason == "Connection" then
+				task.wait(2)
+			else
+				say(label .. ": " .. (REASON[reason] or tostring(reason)))
+				skip[q.id .. ":" .. slot] = true
+				task.wait(1.5)
+				return
+			end
+		end
+		if not started then return end
+		ours, stopEvent, rolls = true, nil, 0
+		local t0, sig, removed = os.clock(), table.concat(names, "|"), false
+		while current(my) do
+			if stopEvent then break end
+			if os.clock() - t0 > 4 and player:GetAttribute("EnchantAutoPet") == nil then task.wait(1); break end
+			local w = Config.enchantWanted[q.id]
+			if not w or next(w) == nil then removed = true; rf("AutoStop"); break end   -- you un-ticked everything / removed the pet
+			local nn = wantedNames(q.id)
+			local s2 = table.concat(nn, "|")
+			if s2 ~= sig then sig = s2; rf("SetFilters", nn) end   -- you changed the enchants while it rolls: applied at once
+			say(string.format("Rolling %s | %d roll(s)", label, rolls))
+			task.wait(0.25)
+		end
+		if not current(my) then return end   -- toggled off: the runner's exit stops the roll
+		local ev = stopEvent or { Reason = "Ended" }
+		claimHeld()
+		ours = false
+		if removed then updateLive(); task.wait(0.3); return end
+		local r = tostring(ev.Reason)
+		if r == "Matched" then
+			failCount[q.id .. ":" .. slot] = nil
+			local want = enchName(ev.Enchant)
+			local t1 = os.clock()
+			while current(my) and os.clock() - t1 < 4 do   -- wait until the game's data shows the new enchant
+				local o = ownedMap()
+				local pp = o and o[q.id]
+				if pp and slotVal(pp, slot) == want then break end
+				task.wait(0.2)
+			end
+			lastResult = string.format("%s got %s (%d rolls)", label, tostring(ev.Enchant), tonumber(ev.Rolls) or rolls)
+		elseif r == "Gems" then
+			runOn = false; paintSwitch(); say("Stopped: out of gems"); return
+		else
+			local k = q.id .. ":" .. slot
+			failCount[k] = (failCount[k] or 0) + 1
+			lastResult = label .. " stopped: " .. r
+			if failCount[k] >= 3 then skip[k] = true end
+		end
+		updateLive()
+		task.wait(0.5)
+	end
+
+	local function runner(my)
+		local didWork = false
+		while current(my) do
+			local q, p, slot = nextJob()
+			if q then
+				didWork = true
+				runJob(my, q, p, slot)
+			elseif type(p) == "string" then
+				say(p)   -- e.g. the game's data could not be read: try again shortly
+				task.wait(0.8)
+			else
+				-- nothing left in the queue: the toggle switches itself off
+				runOn = false
+				paintSwitch()
+				say(didWork and "Finished - every pet in the queue has its enchants. Toggle switched off."
+					or "Queue is empty - pick a pet, press Select Enchant and tick enchants, then switch on.")
+			end
+		end
+		if ours then   -- toggled off (or closed) while rolling: stop our own roll and take the pet back
+			pcall(rf, "AutoStop")
+			task.wait(0.5)
+			claimHeld()
+			ours = false
+		end
+	end
+	local function setRun(v)
+		v = v and true or false
+		if v == runOn then return end
+		runOn = v
+		runId = runId + 1
+		if v then
+			for k in pairs(skip) do skip[k] = nil end
+			for k in pairs(failCount) do failCount[k] = nil end
+			say("Starting...")
+			task.spawn(runner, runId)
+		else
+			say("Off")
+		end
+		paintSwitch()
+	end
+
+	------------------------------------------------ animation helpers (this page only)
+	local ORIG = setmetatable({}, { __mode = "k" })   -- instance -> { property = original value }, so a replayed fade never starts from a half faded value
+	local function origOf(inst, prop)
+		local o = ORIG[inst]
+		if not o then o = {}; ORIG[inst] = o end
+		if o[prop] == nil then o[prop] = inst[prop] end
+		return o[prop]
+	end
+	-- Fades `root` and everything inside it in after `delay` seconds; `slide` (a Vector2 of pixels) also slides it in from that far away.
+	-- The invisible start is applied at once, so nothing flashes before the animation begins.
+	local function fadeIn(root, delay, dur, slide)
+		local items = {}
+		local function push(i, prop)
+			local v = origOf(i, prop)
+			if v < 1 then items[#items + 1] = { i, prop, v } end
+		end
+		local function add(i)
+			if i:IsA("UIStroke") then
+				push(i, "Transparency")
+			elseif i:IsA("GuiObject") then
+				push(i, "BackgroundTransparency")
+				if i:IsA("TextLabel") or i:IsA("TextButton") or i:IsA("TextBox") then
+					push(i, "TextTransparency")
+				elseif i:IsA("ImageLabel") or i:IsA("ImageButton") or i:IsA("ViewportFrame") then
+					push(i, "ImageTransparency")
+				end
+			end
+		end
+		add(root)
+		for _, d in ipairs(root:GetDescendants()) do add(d) end
+		for _, it in ipairs(items) do it[1][it[2]] = 1 end
+		local finalPos = slide and origOf(root, "Position") or nil
+		if slide then root.Position = finalPos + UDim2.fromOffset(slide.X, slide.Y) end
+		task.delay(delay or 0, function()
+			if not root.Parent then return end
+			for _, it in ipairs(items) do
+				if it[1].Parent then tween(it[1], { [it[2]] = it[3] }, dur or 0.3) end
+			end
+			if slide then tweenX(root, { Position = finalPos }, dur or 0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out) end
+		end)
+	end
+	-- Hover grow + press squish for a button anchored at its centre. rest / hover: functions that return the button's colours (nil = leave the colour alone).
+	local function pressable(b, rest, hover)
+		local sc = new("UIScale", { Scale = 1 }, b)
+		b.MouseEnter:Connect(function()
+			tweenX(sc, { Scale = 1.03 }, 0.15, Enum.EasingStyle.Quad)
+			if hover then tween(b, { BackgroundColor3 = hover() }, 0.12) end
+		end)
+		b.MouseLeave:Connect(function()
+			tweenX(sc, { Scale = 1 }, 0.2, Enum.EasingStyle.Quad)
+			if rest then tween(b, { BackgroundColor3 = rest() }, 0.15) end
+		end)
+		b.MouseButton1Down:Connect(function() tweenX(sc, { Scale = 0.95 }, 0.08, Enum.EasingStyle.Quad) end)
+		b.MouseButton1Up:Connect(function() tweenX(sc, { Scale = 1.03 }, 0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out) end)
+		return sc
+	end
+	-- true while the object and every parent above it is visible (used to replay the page entrance when you open the page)
+	local function isShown(g)
+		local o = g
+		while o do
+			if o:IsA("LayerCollector") then return true end
+			if o:IsA("GuiObject") and not o.Visible then return false end
+			o = o.Parent
+		end
+		return false
+	end
+
+	------------------------------------------------ small ui helpers
+	local function text(parent, str, x, y, w, h, size, color, font, align)
+		return new("TextLabel", {
+			Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h), BackgroundTransparency = 1, Text = str,
+			TextColor3 = color or C.text, TextSize = size or 15, Font = font or Enum.Font.Gotham, TextWrapped = false,
+			TextXAlignment = align or Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+		}, parent)
+	end
+	local function button(parent, str, x, y, w, h, onClick)
+		local b = new("TextButton", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(x + w / 2, y + h / 2), Size = UDim2.fromOffset(w, h), BackgroundColor3 = RUN_IDLE, AutoButtonColor = false,
+			Text = str, TextColor3 = Color3.new(1, 1, 1), TextSize = 15, Font = Enum.Font.GothamMedium, BorderSizePixel = 0,
+		}, parent)
+		corner(b, UDim.new(0, 12))
+		stroke(b, C.stroke, 1)
+		pressable(b, function() return RUN_IDLE end, function() return RUN_HOVER end)
+		b.MouseButton1Click:Connect(function() onClick(b) end)
+		return b
+	end
+
+	------------------------------------------------ state
+	local filterKey, groups, curGroup, curPet = nil, {}, nil, nil
+	local filterBtns, listBtns, cardObjs = {}, {}, {}
+	local mode = "info"   -- right panel: "info" | "enchant" | "rename"
+
+	------------------------------------------------ step 1: rarity buttons
+	local FW = (1066 - 30) / 4
+	local refreshAll   -- forward declaration
+	local function paintFilters()
+		for k, b in pairs(filterBtns) do
+			local on = (k == filterKey)
+			tween(b, { BackgroundColor3 = on and Color3.fromRGB(70, 70, 70) or RUN_IDLE, TextColor3 = on and Color3.new(1, 1, 1) or C.sub }, 0.18)
+			local st = b:FindFirstChildOfClass("UIStroke")
+			if st then tween(st, { Color = on and C.iconFg or C.stroke, Thickness = on and 2 or 1 }, 0.18) end
+		end
+	end
+	for i, f in ipairs(FILTERS) do
+		local key, name = f[1], f[2]
+		local b = new("TextButton", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset((i - 1) * (FW + 10) + FW / 2, 22), Size = UDim2.fromOffset(FW, 44), BackgroundColor3 = RUN_IDLE, AutoButtonColor = false,
+			Text = name, TextColor3 = C.sub, TextSize = 17, Font = Enum.Font.GothamMedium, BorderSizePixel = 0,
+		}, host)
+		corner(b, UDim.new(0, 14))
+		stroke(b, C.stroke, 1)
+		pressable(b, function() return key == filterKey and Color3.fromRGB(70, 70, 70) or RUN_IDLE end,
+			function() return key == filterKey and Color3.fromRGB(70, 70, 70) or RUN_HOVER end)
+		b.MouseButton1Click:Connect(function()
+			filterKey, curGroup, curPet, mode = key, nil, nil, "info"
+			refreshAll()
+		end)
+		filterBtns[key] = b
+	end
+
+	------------------------------------------------ stage with three columns
+	local stage = new("Frame", {
+		Position = UDim2.fromOffset(0, 56), Size = UDim2.fromOffset(1066, 524), BackgroundColor3 = C.card,
+		BackgroundTransparency = CARD_T, BorderSizePixel = 0, ClipsDescendants = true,
+	}, host)
+	corner(stage, UDim.new(0, 20))
+	stroke(stage, C.stroke, 1)
+
+	local LX, LW, MX, MW, RX, RW, TOP, COLH = 12, 250, 274, 520, 806, 248, 40, 474
+	text(stage, "2   PET TYPE", LX + 4, 10, LW, 22, 14, C.sub, Enum.Font.GothamBold)
+	text(stage, "3   YOUR PETS", MX + 4, 10, MW, 22, 14, C.sub, Enum.Font.GothamBold)
+	text(stage, "4   SELECTED PET", RX + 4, 10, RW, 22, 14, C.sub, Enum.Font.GothamBold)
+	for _, x in ipairs({ MX - 6, RX - 6 }) do
+		new("Frame", { Position = UDim2.fromOffset(x, 12), Size = UDim2.fromOffset(1, 500), BackgroundColor3 = C.stroke, BackgroundTransparency = 0.5, BorderSizePixel = 0 }, stage)
+	end
+
+	-- the enchanting toggle, right next to "4 SELECTED PET"
+	local swLabel = text(stage, "Enchant", RX + 120, 8, 72, 24, 13, C.sub, Enum.Font.GothamMedium, Enum.TextXAlignment.Right)
+	local sw = new("TextButton", {
+		Position = UDim2.fromOffset(RX + RW - 50, 8), Size = UDim2.fromOffset(46, 24), BackgroundColor3 = RUN_IDLE, AutoButtonColor = false,
+		Text = "", BorderSizePixel = 0,
+	}, stage)
+	corner(sw, UDim.new(1, 0))
+	local swStroke = stroke(sw, C.stroke, 1)
+	local knob = new("Frame", { Position = UDim2.fromOffset(3, 3), Size = UDim2.fromOffset(18, 18), BackgroundColor3 = C.sub, BorderSizePixel = 0 }, sw)
+	corner(knob, UDim.new(1, 0))
+	local swPulse
+	paintSwitch = function()
+		tweenX(knob, { Position = runOn and UDim2.fromOffset(25, 3) or UDim2.fromOffset(3, 3), BackgroundColor3 = runOn and Color3.new(1, 1, 1) or C.sub }, 0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+		tween(sw, { BackgroundColor3 = runOn and Color3.fromRGB(85, 85, 85) or RUN_IDLE }, 0.15)
+		tween(swLabel, { TextColor3 = runOn and C.text or C.sub }, 0.15)
+		if swPulse then swPulse:Cancel(); swPulse = nil end
+		if runOn then   -- breathing outline while it is rolling
+			swStroke.Color, swStroke.Thickness = C.iconFg, 1
+			swPulse = TweenService:Create(swStroke, TweenInfo.new(0.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), { Color = Color3.fromRGB(110, 110, 110), Thickness = 2 })
+			swPulse:Play()
+		else
+			tween(swStroke, { Color = C.stroke, Thickness = 1 }, 0.2)
+		end
+	end
+	sw.MouseButton1Click:Connect(function() setRun(not runOn) end)
+
+	local listFrame = new("ScrollingFrame", {
+		Position = UDim2.fromOffset(LX, TOP), Size = UDim2.fromOffset(LW, COLH), BackgroundTransparency = 1, BorderSizePixel = 0,
+		ScrollBarThickness = 4, ScrollBarImageColor3 = C.stroke, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+	}, stage)
+	new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, listFrame)
+	new("UIPadding", { PaddingRight = UDim.new(0, 8) }, listFrame)
+
+	local grid = new("ScrollingFrame", {
+		Position = UDim2.fromOffset(MX, TOP), Size = UDim2.fromOffset(MW, COLH), BackgroundTransparency = 1, BorderSizePixel = 0,
+		ScrollBarThickness = 4, ScrollBarImageColor3 = C.stroke, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+	}, stage)
+	new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal, Wraps = true, HorizontalAlignment = Enum.HorizontalAlignment.Center,
+		VerticalAlignment = Enum.VerticalAlignment.Top, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 12),
+	}, grid)
+	new("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 8) }, grid)
+	local gridHint = new("TextLabel", {
+		Position = UDim2.fromOffset(MX, TOP), Size = UDim2.fromOffset(MW, COLH), BackgroundTransparency = 1, TextWrapped = true,
+		Text = "", TextColor3 = C.sub, TextSize = 16, Font = Enum.Font.Gotham,
+	}, stage)
+
+	local detail = new("Frame", { Position = UDim2.fromOffset(RX, TOP), Size = UDim2.fromOffset(RW, COLH), BackgroundTransparency = 1 }, stage)
+	-- status line + queue, at the bottom of the right column (not rebuilt with the rest, so typing a new name is never interrupted)
+	local liveBox = new("TextLabel", {
+		Position = UDim2.fromOffset(RX, TOP + 366), Size = UDim2.fromOffset(RW, 108), BackgroundTransparency = 1, TextWrapped = true,
+		TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, Text = "", TextColor3 = C.sub,
+		TextSize = 13, Font = Enum.Font.Gotham, ClipsDescendants = true,
+	}, stage)
+	updateLive = function()
+		local lines = { liveStatus }
+		if lastResult ~= "" then lines[#lines + 1] = "Last: " .. lastResult end
+		lines[#lines + 1] = ""
+		lines[#lines + 1] = "Queue (" .. #queue .. ") - right-click a card to remove:"
+		for i, q in ipairs(queue) do
+			if i > 5 then lines[#lines + 1] = "..."; break end
+			lines[#lines + 1] = (i == 1 and "> " or "  ") .. i .. ". " .. q.name .. " (" .. shownTier(q.tier) .. ") [" .. slotLabel(q.id) .. "] - " .. table.concat(wantedNames(q.id), ", ")
+		end
+		liveBox.Text = table.concat(lines, "\n")
+		liveBox.Visible = (mode ~= "enchant")
+		if paintCards then paintCards() end
+	end
+
+	------------------------------------------------ step 4: the selected pet (right column)
+	local statusMsg = ""
+	local renderDetail
+	local function setStatus(s) say(s) end
+
+	local function wantedList(p)
+		local w, l = Config.enchantWanted[curPet and curPet.id or ""] or {}, {}
+		for n in pairs(w) do l[#l + 1] = n end
+		table.sort(l)
+		return l
+	end
+
+	local detailKey = nil
+	local renderDetailRaw = function()
+		for _, c in ipairs(detail:GetChildren()) do c:Destroy() end
+		updateLive()
+		if not curPet then
+			text(detail, curGroup and "Click a pet card to select it." or "Pick a pet type first.", 0, 0, RW, 40, 15, C.sub)
+			return
+		end
+		local p = curPet.p
+		text(detail, tostring(p.Nickname or p.Name), 0, 0, RW, 26, 19, C.text, Enum.Font.GothamBold)
+		text(detail, shownTier(p.Tier) .. "  -  " .. tostring(p.Affinity or p.PetAffinity or "no affinity"), 0, 28, RW, 20, 14, C.sub)
+
+		if mode == "enchant" then
+			-- pick the enchants you want (tick several); stored in Config.enchantWanted[pet id]
+			text(detail, "Tick the enchants you want:", 0, 58, RW, 20, 14, C.text, Enum.Font.GothamMedium)
+			local names = {}
+			if okEC and EC and type(EC.Enchants) == "table" then
+				for n in pairs(EC.Enchants) do
+					if isFilterable(n) then names[#names + 1] = tostring(n) end
+				end
+			end
+			table.sort(names, function(a, b)
+				local ra, rb = rankOf(a), rankOf(b)
+				if ra ~= rb then return ra > rb end
+				return a < b
+			end)
+			local sc = new("ScrollingFrame", {
+				Position = UDim2.fromOffset(0, 82), Size = UDim2.fromOffset(RW, 328), BackgroundTransparency = 1, BorderSizePixel = 0,
+				ScrollBarThickness = 3, ScrollBarImageColor3 = C.stroke, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+			}, detail)
+			new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, sc)
+			new("UIPadding", { PaddingRight = UDim.new(0, 6) }, sc)
+			if #names == 0 then text(sc, "No enchant list found.", 0, 0, RW, 24, 14, C.sub) end
+			for i, n in ipairs(names) do
+				local w = Config.enchantWanted[curPet.id]
+				local on = w and w[n] or false
+				local b = new("TextButton", {
+					LayoutOrder = i, Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = on and Color3.fromRGB(60, 60, 60) or RUN_IDLE, AutoButtonColor = false,
+					Text = (on and "[x]  " or "[  ]  ") .. n, TextColor3 = on and Color3.new(1, 1, 1) or C.sub, TextSize = 14, Font = Enum.Font.Gotham,
+					TextXAlignment = Enum.TextXAlignment.Left, BorderSizePixel = 0,
+				}, sc)
+				corner(b, UDim.new(0, 8))
+				new("UIPadding", { PaddingLeft = UDim.new(0, 10) }, b)
+				b.MouseEnter:Connect(function() tween(b, { BackgroundColor3 = on and Color3.fromRGB(78, 78, 78) or RUN_HOVER }, 0.1) end)
+				b.MouseLeave:Connect(function() tween(b, { BackgroundColor3 = on and Color3.fromRGB(60, 60, 60) or RUN_IDLE }, 0.14) end)
+				b.MouseButton1Click:Connect(function()
+					local t = Config.enchantWanted[curPet.id] or {}
+					Config.enchantWanted[curPet.id] = t
+					t[n] = (not t[n]) or nil
+					if next(t) == nil then Config.enchantWanted[curPet.id] = nil end
+					syncQueue(curPet.id, curPet.p)
+					renderDetail()
+				end)
+			end
+			button(detail, "Done", 0, 422, RW, 44, function() mode = "info"; renderDetail() end)
+			return
+		end
+
+		-- the two enchant slots
+		local e1, e2 = enchName(p.Enchant), enchName(p.Enchant2)
+		text(detail, "Slot 1:  " .. (e1 or "empty"), 0, 62, RW, 22, 15, e1 and C.text or C.sub)
+		if slotCount(p) >= 2 then
+			text(detail, "Slot 2:  " .. (e2 or "empty"), 0, 88, RW, 22, 15, e2 and C.text or C.sub)
+		else
+			text(detail, "Slot 2:  locked", 0, 88, RW, 22, 15, Color3.fromRGB(95, 95, 95))
+		end
+		local w = wantedList(p)
+		text(detail, "Wanted:  " .. (#w > 0 and table.concat(w, ", ") or "nothing chosen"), 0, 118, RW, 22, 14, #w > 0 and C.iconFg or C.sub)
+
+		-- which slot the chosen enchants go on: Slot 1 / Slot 2 / Both (every unlocked slot ends up with one of them)
+		local choice = slotChoice(curPet.id)
+		local SLOT_OPTS = { { 1, "Slot 1" }, { 2, "Slot 2" }, { "both", "Both" } }
+		local bw = (RW - 8) / 3
+		for i, o in ipairs(SLOT_OPTS) do
+			local on = (choice == o[1])
+			local b = new("TextButton", {
+				Position = UDim2.fromOffset((i - 1) * (bw + 4), 146), Size = UDim2.fromOffset(bw, 30), AutoButtonColor = false, BorderSizePixel = 0,
+				BackgroundColor3 = on and Color3.fromRGB(70, 70, 70) or RUN_IDLE, Text = o[2], TextSize = 13, Font = Enum.Font.GothamMedium,
+				TextColor3 = on and Color3.new(1, 1, 1) or C.sub,
+			}, detail)
+			corner(b, UDim.new(0, 10))
+			stroke(b, on and C.iconFg or C.stroke, on and 2 or 1)
+			b.MouseEnter:Connect(function() tween(b, { BackgroundColor3 = on and Color3.fromRGB(86, 86, 86) or RUN_HOVER }, 0.1) end)
+			b.MouseLeave:Connect(function() tween(b, { BackgroundColor3 = on and Color3.fromRGB(70, 70, 70) or RUN_IDLE }, 0.14) end)
+			b.MouseButton1Click:Connect(function()
+				Config.enchantSlot[curPet.id] = o[1]
+				syncQueue(curPet.id, curPet.p)
+				renderDetail()
+			end)
+		end
+
+		button(detail, "Select Enchant", 0, 188, RW, 40, function() mode = "enchant"; renderDetail() end)
+
+		if mode == "rename" then
+			local box = new("TextBox", {
+				Position = UDim2.fromOffset(0, 236), Size = UDim2.fromOffset(RW, 42), BackgroundColor3 = FIELD, BorderSizePixel = 0,
+				ClearTextOnFocus = false, Text = tostring(p.Nickname or ""), PlaceholderText = "New name...", PlaceholderColor3 = Color3.fromRGB(109, 109, 109),
+				TextColor3 = C.text, TextSize = 15, Font = Enum.Font.Gotham, TextXAlignment = Enum.TextXAlignment.Left,
+			}, detail)
+			corner(box, UDim.new(0, 12))
+			stroke(box, C.stroke, 1)
+			new("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }, box)
+			button(detail, "Apply name", 0, 284, RW, 36, function()
+				local nick = (box.Text:gsub("^%s+", ""))
+				nick = (nick:gsub("%s+$", ""))
+				if nick == "" then setStatus("Type a name first."); return end
+				local rs = RSv:FindFirstChild("RemoteServices")
+				local ps = rs and rs:FindFirstChild("PetService")
+				local rfs = ps and ps:FindFirstChild("RF")
+				local remote = rfs and rfs:FindFirstChild("SetNickname")
+				if not remote then setStatus("Rename failed: PetService.RF.SetNickname not found."); return end
+				local ok, res = pcall(function() return remote:InvokeServer({ Nickname = nick, PetId = curPet.id }) end)
+				if not ok then setStatus("Rename failed: " .. tostring(res)); return end
+				if type(res) == "table" and res.Success == false then setStatus("Rename failed: " .. tostring(res.Reason or "refused by the game")); return end
+				task.wait(0.4)
+				pcall(function() curPet.p.Nickname = nick end)   -- in case the game's data table has not updated yet
+				mode = "info"
+				setStatus("Renamed to " .. nick)
+				showCards()
+				renderDetail()
+			end)
+		else
+			button(detail, "Rename Pet", 0, 236, RW, 40, function() mode = "rename"; renderDetail() end)
+		end
+
+		-- Replace rare: off = a slot holding a rare / III enchant is never rolled over (it is skipped). Sits below Rename Pet.
+		local repY = (mode == "rename") and 328 or 284
+		local rep_ = Config.enchantReplace[curPet.id] == true
+		local rb = new("TextButton", {
+			Position = UDim2.fromOffset(0, repY), Size = UDim2.fromOffset(RW, 30), AutoButtonColor = false, BorderSizePixel = 0,
+			BackgroundColor3 = rep_ and Color3.fromRGB(95, 60, 60) or RUN_IDLE, Text = "Replace rare enchants:  " .. (rep_ and "ON" or "off"),
+			TextSize = 13, Font = Enum.Font.GothamMedium, TextColor3 = rep_ and Color3.new(1, 1, 1) or C.sub,
+		}, detail)
+		corner(rb, UDim.new(0, 10))
+		stroke(rb, rep_ and Color3.fromRGB(200, 120, 120) or C.stroke, rep_ and 2 or 1)
+		rb.MouseEnter:Connect(function() tween(rb, { BackgroundColor3 = rep_ and Color3.fromRGB(115, 72, 72) or RUN_HOVER }, 0.1) end)
+		rb.MouseLeave:Connect(function() tween(rb, { BackgroundColor3 = rep_ and Color3.fromRGB(95, 60, 60) or RUN_IDLE }, 0.14) end)
+		rb.MouseButton1Click:Connect(function()
+			Config.enchantReplace[curPet.id] = (not rep_) or nil
+			syncQueue(curPet.id, curPet.p)
+			renderDetail()
+		end)
+	end
+
+	-- the panel slides in one piece after the other, but only when the pet or the mode changed (not on every tick / slot click)
+	renderDetail = function()
+		renderDetailRaw()
+		local key = (curPet and tostring(curPet.id) or "none") .. "|" .. tostring(mode)
+		if key == detailKey then return end
+		detailKey = key
+		local n = 0
+		for _, c in ipairs(detail:GetChildren()) do
+			if c:IsA("GuiObject") then
+				n = n + 1
+				fadeIn(c, 0.035 * (n - 1), 0.3, Vector2.new(18, 0))
+			end
+		end
+	end
+
+	------------------------------------------------ step 3: pet cards
+	local pulseTween, pulseOwner
+	local function stopPulse()
+		if pulseTween then pulseTween:Cancel(); pulseTween = nil end
+		pulseOwner = nil
+	end
+	paintCards = function()
+		for _, o in ipairs(cardObjs) do
+			local on = (curPet ~= nil and o.entry == curPet)
+			if on ~= o.on then   -- only when the selection really changed (this runs often while rolling)
+				o.on = on
+				if on then
+					stopPulse()
+					pulseOwner = o
+					tween(o.stroke, { Color = Color3.fromRGB(235, 235, 235), Thickness = 3 }, 0.15)
+					tween(o.body, { BackgroundColor3 = Color3.fromRGB(34, 34, 34) }, 0.15)
+					task.delay(0.2, function()   -- the selected card then breathes
+						if pulseOwner == o and o.stroke.Parent then
+							pulseTween = TweenService:Create(o.stroke, TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), { Color = Color3.fromRGB(140, 140, 140) })
+							pulseTween:Play()
+						end
+					end)
+				else
+					if pulseOwner == o then stopPulse() end
+					tween(o.stroke, { Color = C.stroke, Thickness = 1 }, 0.2)
+					tween(o.body, { BackgroundColor3 = Color3.fromRGB(16, 16, 16) }, 0.2)
+				end
+			end
+			local pos
+			for i, q in ipairs(queue) do if q.id == o.entry.id then pos = i break end end
+			o.badge.Visible = pos ~= nil
+			if pos then
+				o.badge.Text = "#" .. pos
+				if not o.shown then   -- the queue badge pops in
+					o.shown = true
+					o.badgeScale.Scale = 0.3
+					tweenX(o.badgeScale, { Scale = 1 }, 0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+				end
+			else
+				o.shown = false
+			end
+		end
+	end
+
+	------------------------------------------------ pet icons: our own viewport (the game's PetCardRenderer can not be called from here)
+	-- A one-time index of every Model / MeshPart in ReplicatedStorage by name; the pet's model is cloned into a ViewportFrame inside the circle.
+	local modelIndex = nil
+	local function buildModelIndex()
+		modelIndex = {}
+		local n = 0
+		local function scan(root)
+			for _, d in ipairs(root:GetDescendants()) do
+				if d:IsA("Model") or d:IsA("MeshPart") then
+					local l = modelIndex[d.Name]
+					if not l then l = {}; modelIndex[d.Name] = l end
+					l[#l + 1] = d
+				end
+				n = n + 1
+				if n % 3000 == 0 then task.wait() end
+			end
+		end
+		pcall(scan, RSv)
+	end
+	local TIER_WORDS = { golden = true, diamond = true, shiny = true, rainbow = true }
+	local function findModel(p)
+		if not modelIndex then buildModelIndex() end
+		local list = modelIndex[tostring(p.Name)]
+		if not list then return nil, {} end
+		local tier = tostring(p.Tier or "Normal"):lower()
+		local best, bestScore = nil, -1e9
+		for _, m in ipairs(list) do
+			local path = m:GetFullName():lower()
+			local score = 0
+			if tier == "normal" then
+				for w in pairs(TIER_WORDS) do if path:find(w, 1, true) then score = score - 2 end end
+			else
+				if path:find(tier, 1, true) then score = score + 3 end
+				if tier == "shiny" and path:find("rainbow", 1, true) then score = score + 3 end
+			end
+			if path:find("pet", 1, true) then score = score + 1 end
+			if path:find("icon", 1, true) or path:find("thumb", 1, true) then score = score - 1 end
+			if m:IsA("Model") then score = score + 0.5 end
+			if score > bestScore then best, bestScore = m, score end
+		end
+		return best, list
+	end
+	-- Puts a clone of the pet's model into a viewport inside `circle`. Returns true if it worked.
+	local function drawModel(circle, p)
+		local src = findModel(p)
+		if not src then return false end
+		local ok, res = pcall(function()
+			local clone = src:Clone()
+			for _, d in ipairs(clone:GetDescendants()) do   -- icons must not run the pet's scripts / animations
+				if d:IsA("BaseScript") then d:Destroy() end
+			end
+			local vp = new("ViewportFrame", {
+				Name = "PetView", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 2,
+				Ambient = Color3.fromRGB(170, 170, 170), LightColor = Color3.fromRGB(255, 255, 255), LightDirection = Vector3.new(-1, -1.5, -1),
+			}, circle)
+			clone.Parent = vp
+			local cf, size
+			if clone:IsA("Model") then cf, size = clone:GetBoundingBox() else cf, size = clone.CFrame, clone.Size end
+			local cam = new("Camera", { FieldOfView = 35 }, vp)
+			local dist = (size.Magnitude / 2) / math.tan(math.rad(cam.FieldOfView / 2)) * 1.05
+			local dir = Vector3.new(0.55, 0.35, 1).Unit
+			cam.CFrame = CFrame.lookAt(cf.Position + dir * dist, cf.Position)
+			vp.CurrentCamera = cam
+			return true
+		end)
+		if not ok then warn("[WORST Hub] icon draw failed for " .. tostring(p.Name) .. ": " .. tostring(res)) end
+		return ok and res == true
+	end
+
+	local function makeCard(e, order)
+		local p = e.p
+		local slotFrame = new("Frame", { Size = UDim2.fromOffset(CARD_W, CARD_H), BackgroundTransparency = 1, LayoutOrder = order }, grid)
+		local card = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1 }, slotFrame)
+		local cardScale = new("UIScale", { Scale = 1 }, card)   -- the card pops in and grows a little under the mouse; its slot in the grid never moves
+		local body = new("Frame", {
+			Position = UDim2.fromOffset(0, CIRCLE / 2), Size = UDim2.fromOffset(CARD_W, CARD_H - CIRCLE / 2),
+			BackgroundColor3 = Color3.fromRGB(16, 16, 16), BackgroundTransparency = 0.15, BorderSizePixel = 0,
+		}, card)
+		corner(body, UDim.new(0, 16))
+		local st = stroke(body, C.stroke, 1)
+		local circle = new("ImageLabel", {
+			Position = UDim2.fromOffset((CARD_W - CIRCLE) / 2, 0), Size = UDim2.fromOffset(CIRCLE, CIRCLE), BackgroundColor3 = C.iconBg,
+			BorderSizePixel = 0, ClipsDescendants = true, ZIndex = 2, ScaleType = Enum.ScaleType.Fit,
+		}, card)
+		corner(circle, UDim.new(1, 0))
+		stroke(circle, Color3.fromRGB(205, 205, 205), 2)
+
+		-- texts first (a slow icon can never leave a card empty)
+		local function ct(str, y, size, color, font)
+			local l = text(card, str, 6, y, CARD_W - 12, size + 8, size, color, font, Enum.TextXAlignment.Center)
+			l.ZIndex = 3
+			return l
+		end
+		ct(tostring(p.Nickname or p.Name), 76, 15, C.text, Enum.Font.GothamBold)
+		ct(shownTier(p.Tier) .. " - " .. tostring(p.Affinity or p.PetAffinity or "no affinity"), 100, 12, C.sub)
+		local e1, e2 = enchName(p.Enchant), enchName(p.Enchant2)
+		ct("1: " .. (e1 or "empty"), 130, 13, e1 and C.text or C.sub)
+		if slotCount(p) >= 2 then ct("2: " .. (e2 or "empty"), 152, 13, e2 and C.text or C.sub)
+		else ct("2: locked", 152, 13, Color3.fromRGB(95, 95, 95)) end
+
+		-- icon: own thread; the fallback letter is created here (the spawned thread may not create Instances)
+		local letterLbl = new("TextLabel", {
+			Name = "Letter", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = string.sub(tostring(p.Name), 1, 1),
+			TextColor3 = C.text, TextSize = 28, Font = Enum.Font.GothamBold, ZIndex = 3, Visible = false,
+		}, circle)
+		if not drawModel(circle, p) then
+			letterLbl.Visible = true   -- no model found for this pet: its first letter instead
+			if not Config._iconDebugDone then
+				Config._iconDebugDone = true
+				local _, list = findModel(p)
+				local paths, names = {}, {}
+				for i, m in ipairs(list) do if i <= 6 then paths[#paths + 1] = m:GetFullName() end end
+				local c = 0
+				for k in pairs(modelIndex or {}) do c = c + 1 end
+				for _, ch in ipairs(RSv:GetChildren()) do names[#names + 1] = ch.Name end
+				warn(string.format("[WORST Hub] icon debug: no model for '%s' (%s). candidates={%s} indexedNames=%d ReplicatedStorage={%s}",
+					tostring(p.Name), tostring(p.Tier), table.concat(paths, " ; "), c, table.concat(names, ", ")))
+			end
+		end
+
+		local click = new("TextButton", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "", ZIndex = 6 }, card)
+		click.MouseButton1Click:Connect(function()
+			curPet, mode, statusMsg = e, "info", ""
+			paintCards()
+			renderDetail()
+		end)
+		local badge = new("TextLabel", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(CARD_W - 40 + 17, CIRCLE / 2 + 6 + 9), Size = UDim2.fromOffset(34, 18), BackgroundColor3 = C.iconFg, BorderSizePixel = 0,
+			Text = "", TextColor3 = Color3.fromRGB(15, 15, 15), TextSize = 12, Font = Enum.Font.GothamBold, Visible = false, ZIndex = 4,
+		}, card)
+		corner(badge, UDim.new(1, 0))
+		local badgeScale = new("UIScale", { Scale = 1 }, badge)
+		-- right click = take this pet out of the queue (its chosen enchants are cleared; a roll that is running on it is stopped)
+		click.MouseButton2Click:Connect(function()
+			local queued = false
+			for _, q in ipairs(queue) do if q.id == e.id then queued = true break end end
+			if not queued then return end
+			lastResult = tostring(p.Nickname or p.Name) .. " removed from the queue"
+			Config.enchantWanted[e.id] = nil
+			syncQueue(e.id, p)
+			if curPet == e then renderDetail() end
+		end)
+		local obj = { frame = slotFrame, entry = e, stroke = st, body = body, badge = badge, badgeScale = badgeScale, on = false, shown = false }
+		cardObjs[#cardObjs + 1] = obj
+		-- hover / press
+		click.MouseEnter:Connect(function()
+			tweenX(cardScale, { Scale = 1.045 }, 0.16, Enum.EasingStyle.Quad)
+			if not obj.on then
+				tween(body, { BackgroundColor3 = Color3.fromRGB(26, 26, 26) }, 0.12)
+				tween(st, { Color = Color3.fromRGB(150, 150, 150) }, 0.12)
+			end
+		end)
+		click.MouseLeave:Connect(function()
+			tweenX(cardScale, { Scale = 1 }, 0.2, Enum.EasingStyle.Quad)
+			if not obj.on then
+				tween(body, { BackgroundColor3 = Color3.fromRGB(16, 16, 16) }, 0.15)
+				tween(st, { Color = C.stroke }, 0.15)
+			end
+		end)
+		click.MouseButton1Down:Connect(function() tweenX(cardScale, { Scale = 0.96 }, 0.08, Enum.EasingStyle.Quad) end)
+		click.MouseButton1Up:Connect(function() tweenX(cardScale, { Scale = 1.045 }, 0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out) end)
+		-- pop in, one card after the other (only the first 24 are staggered, the rest just appear)
+		if order <= 24 then
+			local d = 0.03 * (order - 1)
+			cardScale.Scale = 0.7
+			fadeIn(card, d, 0.3)
+			task.delay(d, function()
+				if card.Parent then tweenX(cardScale, { Scale = 1 }, 0.38, Enum.EasingStyle.Back, Enum.EasingDirection.Out) end
+			end)
+		end
+	end
+
+	showCards = function()
+		for _, c in ipairs(grid:GetChildren()) do
+			if c:IsA("Frame") then c:Destroy() end
+		end
+		cardObjs = {}
+		stopPulse()
+		grid.CanvasPosition = Vector2.zero
+		if not curGroup then
+			gridHint.Text = filterKey and "Pick a pet type on the left." or "Start with step 1: press a rarity button above."
+			gridHint.Visible = true
+			fadeIn(gridHint, 0, 0.35)
+			return
+		end
+		gridHint.Visible = false
+		for i, e in ipairs(curGroup.pets) do
+			if i > MAX_CARDS then break end
+			local ok, err = pcall(makeCard, e, i)
+			if not ok then warn("[WORST Hub] Enchanting card failed: " .. tostring(err)) end
+		end
+		paintCards()
+	end
+
+	------------------------------------------------ step 2: pet type list
+	local function showList()
+		for _, c in ipairs(listFrame:GetChildren()) do
+			if c:IsA("GuiObject") then c:Destroy() end
+		end
+		listBtns = {}
+		groups = filterKey and buildGroups(filterKey, readPets()) or {}
+		if not filterKey then
+			fadeIn(text(listFrame, "Press a rarity button above.", 0, 0, LW - 8, 40, 14, C.sub), 0, 0.35)
+			return
+		end
+		if #groups == 0 then
+			fadeIn(text(listFrame, "You have no pets in this rarity.", 0, 0, LW - 8, 40, 14, C.sub), 0, 0.35)
+			return
+		end
+		for i, g in ipairs(groups) do
+			local holder = new("Frame", { LayoutOrder = i, Size = UDim2.new(1, 0, 0, 44), BackgroundTransparency = 1 }, listFrame)
+			local b = new("TextButton", {
+				Size = UDim2.fromScale(1, 1), BackgroundColor3 = RUN_IDLE, AutoButtonColor = false, BorderSizePixel = 0,
+				Text = "", ClipsDescendants = true,
+			}, holder)
+			corner(b, UDim.new(0, 12))
+			local st = stroke(b, C.stroke, 1)
+			text(b, tostring(g.name), 12, 4, LW - 90, 20, 15, C.text, Enum.Font.GothamMedium)
+			text(b, shownTier(g.tier), 12, 24, LW - 90, 16, 12, C.sub)
+			text(b, "x" .. #g.pets, LW - 70, 0, 52, 44, 15, C.iconFg, Enum.Font.GothamBold, Enum.TextXAlignment.Right)
+			listBtns[g.key] = { b = b, st = st }
+			b.MouseEnter:Connect(function() if not (curGroup and curGroup.key == g.key) then tween(b, { BackgroundColor3 = RUN_HOVER }, 0.1) end end)
+			b.MouseLeave:Connect(function() if not (curGroup and curGroup.key == g.key) then tween(b, { BackgroundColor3 = RUN_IDLE }, 0.14) end end)
+			fadeIn(b, 0.04 * math.min(i - 1, 14), 0.32, Vector2.new(-28, 0))   -- the list "drops open": every row slides in after the one above it
+			b.MouseButton1Click:Connect(function()
+				curGroup, curPet, mode, statusMsg = g, nil, "info", ""
+				for k, o in pairs(listBtns) do
+					local on = (k == g.key)
+					tween(o.b, { BackgroundColor3 = on and Color3.fromRGB(70, 70, 70) or RUN_IDLE }, 0.15)
+					tween(o.st, { Color = on and C.iconFg or C.stroke, Thickness = on and 2 or 1 }, 0.15)
+				end
+				showCards()
+				renderDetail()
+			end)
+		end
+	end
+
+	refreshAll = function()
+		paintFilters()
+		showList()
+		showCards()
+		renderDetail()
+	end
+	refreshAll()
+
+	-- page entrance: the stage rises, the rarity buttons drop in one after the other. Replayed every time the page is opened.
+	local function playEntrance()
+		stage.Position = UDim2.fromOffset(0, 74)
+		tweenX(stage, { Position = UDim2.fromOffset(0, 56) }, 0.45, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+		for i, f in ipairs(FILTERS) do
+			local fb = filterBtns[f[1]]
+			if fb then fadeIn(fb, 0.06 * (i - 1), 0.35, Vector2.new(0, -14)) end
+		end
+	end
+	playEntrance()
+	local wasShown = isShown(host)
+	task.spawn(function()
+		while alive and host.Parent do
+			task.wait(0.25)
+			local now = isShown(host)
+			if now and not wasShown then pcall(playEntrance) end
+			wasShown = now
+		end
+	end)
+end
+
 ---------------------------------------------------------------- input
 local function buildInput(row, entry)
 	local W, H = 220, 42
@@ -18159,6 +19157,13 @@ local function buildScriptPage(tabName, entries)
 	-- builds the rows (one card per entry) inside a scrolling list
 	local function buildRows(list, rowEntries, idPrefix)
 		for i, entry in ipairs(rowEntries) do
+			if entry.type == "enchantgrid" then
+				-- Pets > Enchanting: a whole page of its own (pet card grid), not a single row
+				local gridHost = new("Frame", { LayoutOrder = i, Size = UDim2.fromOffset(1066, 580), BackgroundTransparency = 1, BorderSizePixel = 0 }, list)
+				entry._id = idPrefix .. "/" .. tostring(entry.name or i)
+				local okGrid, errGrid = pcall(Config.enchantGrid, gridHost, entry)
+				if not okGrid then warn("[WORST Hub] Enchanting page failed: " .. tostring(errGrid)) end
+			else
 			local row = new("Frame", {
 				LayoutOrder = i, Size = UDim2.fromOffset(1066, 84), BackgroundColor3 = C.card, BackgroundTransparency = CARD_T, BorderSizePixel = 0,
 			}, list)
@@ -18181,6 +19186,7 @@ local function buildScriptPage(tabName, entries)
 				build(row, entry)
 			else
 				warn("[WORST Hub] unknown control type: " .. tostring(entry.type))
+			end
 			end
 		end
 	end
@@ -18479,6 +19485,15 @@ for _, pg in ipairs(TAB_SCRIPTS.Settings.pages or {}) do
 			ID_ALIAS["Settings/" .. e.name] = "Settings/" .. pg.name .. "/" .. e.name
 			ID_ALIAS["Settings/Page 1/" .. e.name] = "Settings/" .. pg.name .. "/" .. e.name   -- pages were called Page 1 / Page 2
 			ID_ALIAS["Settings/Page 2/" .. e.name] = "Settings/" .. pg.name .. "/" .. e.name
+		end
+	end
+end
+
+-- Pets > Enchanting became the pet card grid; the old enchant controls moved to Pets > Auto Enchant (old saves still load)
+for _, pgE in ipairs((TAB_SCRIPTS.Pets and TAB_SCRIPTS.Pets.pages) or {}) do
+	if pgE.name == "Auto Enchant" then
+		for _, e in ipairs(pgE.entries) do
+			if e.name then ID_ALIAS["Pets/Enchanting/" .. e.name] = "Pets/Auto Enchant/" .. e.name end
 		end
 	end
 end
@@ -20384,7 +21399,7 @@ end)
 
 
 ------------------------------------------------------------------ 3D RENDERING OFF
--- Used by Settings > Ui > "Disable 3D Rendering" and by the Mini Ui (always off while it is open). The screen turns solid black and
+-- Used by Settings > Ui > "Disable 3D Rendering" only (the Mini Ui does not touch 3D rendering). The screen turns solid black and
 -- your username is shown in the middle of it. Everything of the hub stays above the black layer (ZIndex 0 = lowest).
 do
 	local RunSvc = game:GetService("RunService")
@@ -20480,7 +21495,7 @@ do
 	local last = nil
 	record.apply3d = function()
 		if not alive then return end
-		local off = Config.render3dOff == true or record.liteActive == true
+		local off = Config.render3dOff == true
 		black.Visible, stack.Visible = off, off
 		if off then pcall(refreshInfo) end
 		if off ~= last then
@@ -20500,15 +21515,13 @@ end
 
 ------------------------------------------------------------------ LITE MODE
 -- Only while NOTHING has been toggled by hand since the script was executed (record.userToggled stays false):
---   hub left alone for IDLE_SECS  ->  "Are you afk?" popup  ->  [No] closes it and restarts the timer
---   popup ignored for AFK_SECS    ->  main window closes, a small window opens with Kaitun Hatch + Kaitun Stats (both switched on; Kaitun Events is not)
+--   hub left alone for IDLE_SECS (60 s)  ->  the hub shrinks away and a small window opens with Kaitun Hatch + Kaitun Stats (both switched on; Kaitun Events is not)
 -- Any press / scroll on the hub, minimizing, or an open dialog counts as activity. Toggling anything yourself (also in the
--- Lite window) turns this watcher off for good. While the Lite window is open the FPS cap is forced to 5. The Lite window has a "Full UI" button (or press the minimize key) to go back.
+-- Lite window) turns this watcher off for good. The Lite window does not touch the FPS or 3D rendering. It has a "Full UI" button (or press the minimize key) to go back.
 -- Everything lives inside one function so it does not use up the script's local-variable limit.
 task.spawn(function()
-	local IDLE_SECS = 60   -- no interaction with the hub for this long -> popup
-	local AFK_SECS  = 60   -- popup ignored for this long -> Lite window
-	local AUTO_LITE = false   -- false = the "Are you afk?" popup and the automatic switch never happen: the Mini Ui only opens from Settings > Mini Ui
+	local IDLE_SECS = 60   -- no interaction with the hub for this long since the script was executed -> the Mini Ui opens by itself
+	local AUTO_LITE = true   -- true = the hub shrinks into the Mini Ui by itself after IDLE_SECS without interaction (false = only Settings > Mini Ui opens it)
 
 	local kt = Logic and Logic.kaitun
 	if not (kt and kt.main and kt.second) then
@@ -20737,14 +21750,11 @@ task.spawn(function()
 		if closeOpenDropdown then pcall(closeOpenDropdown) end
 		window.Visible = false   -- every window animation / refresh loop checks this and stops
 		lite.Visible = true
-		if record.apply3d then record.apply3d() end   -- Mini Ui: 3D rendering off, black screen + username
-		if grow then   -- opened from Settings > Mini Ui: the small window pops open (the 5 FPS cap only starts once it has finished)
+		if grow then   -- opened from Settings > Mini Ui: the small window pops open 
 			liteScale.Scale = 0.05
 			tw(liteScale, { Scale = 1 }, 0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
-			-- no FPS cap in Mini Ui any more (Config.fps.lite stays false)
 		else
 			liteScale.Scale = 1
-			-- no FPS cap in Mini Ui any more
 		end
 		pcall(function() if kt.main._setUI then kt.main._setUI(true) end end)     -- no-op when it is already on
 		pcall(function() if kt.enchant and kt.enchant._setUI then kt.enchant._setUI(true) end end)   -- Kaitun Events stays as it is: switch it on yourself if you want it
@@ -20754,11 +21764,8 @@ task.spawn(function()
 	record.exitLite = function()
 		if not record.liteActive then return end
 		record.liteActive = false
-		if record.apply3d then record.apply3d() end   -- back to the full UI: 3D rendering on again (unless the Settings toggle keeps it off)
 		lite.Visible = false
 		window.Visible = true
-		Config.fps.lite = false     -- back to the FPS Cap slider value
-		Config.applyFps()
 		Config.statusHideUntil = math.max(Config.statusHideUntil or 0, os.clock() + 60)   -- Show Status stays hidden for 1 minute after returning to the full UI
 		lastActive = os.clock()
 	end
@@ -20820,18 +21827,11 @@ task.spawn(function()
 				or window:FindFirstChild("IntroBlocker") ~= nil
 			if busy then
 				lastActive = os.clock()
-				if popup.Visible then popup.Visible, popupAt = false, nil end
-			elseif popupAt then
-				local left = math.ceil(AFK_SECS - (os.clock() - popupAt))
-				if left <= 0 then
-					enterLite()
-				else
-					popSub.Text = string.format("Switching to the Lite UI in %ds", left)
-				end
 			elseif os.clock() - lastActive >= IDLE_SECS then
-				popupAt = os.clock()
-				popSub.Text = string.format("Switching to the Lite UI in %ds", AFK_SECS)
-				popup.Visible = true
+				-- afk: the hub shrinks away and the Mini Ui opens (only once; after you come back to the full UI it stays out of your way)
+				local okMini, opened = pcall(function() return record.miniUi and record.miniUi() end)
+				if okMini and opened then break end
+				lastActive = os.clock()
 			end
 		end
 		popup.Visible, popupAt = false, nil
