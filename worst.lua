@@ -30,6 +30,11 @@
 --// 18. Trade (giver): the pets are now put into the offer with the game's own Offer request (pet ids from the pet data), the same way Auto Trade (Pay First) does,
 --//     instead of scrolling the trade window and clicking cards. The server's echo is checked (other copies are tried if it does not show the pets).
 --//     Only if that fails does the old card-clicking method run, so nothing gets worse (fix for "found only 0 of 5 ... list has 44 cards, 0 named ...").
+--// 19. Trade (giver + receiver): the trade window is no longer forced visible (startWindowForce is not called any more). The script now waits for the
+--//     game to open it by itself, so an empty window shown before the trade really starts is never mistaken for the trade.
+--// 20. Trade (receiver): the request is now also accepted with the game's own Respond request (like Auto Accept / Pay First do), not only by pressing the
+--//     popup's Accept button. It answers the moment the Request event of the right sender arrives, and again if the popup is still showing after a press.
+--//     (fix for "did not accept in 90 seconds" while the trade request popup just sat there on the receiver.)
 --// =====================================================================================================
 --// WORST Hub - Auto Hatch (Hatch tab) + Auto Craft (Pets tab)
 --// Execute as a normal script. Executing again closes the previous instance first.
@@ -12396,7 +12401,7 @@ local TradeAgent = (function()
                 return setTrade(id, "failed", false, "could not press Trade")
             end
             setTrade(id, "requested", true, "request sent to " .. t.partner .. ", waiting for them to accept")
-            startWindowForce(target, 120)
+            -- v19: the trade window is NOT forced visible any more: the game opens it by itself when the trade really starts
 
             -- 2) wait for the trade window
             local opened = waitFor(function() return buildOpen() or abortRequested end, 90)
@@ -12463,9 +12468,28 @@ local TradeAgent = (function()
             if not partnerAllowed(t.partner) then return setTrade(id, "failed", false, t.partner .. " is not in ALLOWED_PARTNERS") end
             if t.expect < 1 or t.expect > MAX_OFFER then return setTrade(id, "failed", false, "bad expected pet count") end
             setTrade(id, "waiting", true, "waiting for a trade request from " .. t.partner)
-            startWindowForce(findPlayer(t.partner), 200)
+            -- v19: the trade window is NOT forced visible any more: the game opens it by itself when the trade really starts
 
             -- 1) accept the request, but only from that player
+            -- v20: accept with the game's own Respond request too (the button press needs getconnections and can silently do nothing)
+            local function respondAccept()
+                if tradeRequestRE then pcall(function() tradeRequestRE:FireServer({ Action = "Respond", Accepted = true }) end) end
+            end
+            local reqConn
+            if tradeUpdateRE then
+                reqConn = tradeUpdateRE.OnClientEvent:Connect(function(d)
+                    if type(d) ~= "table" or d.Type ~= "Request" then return end
+                    local from = findPlayer(t.partner)
+                    if not from then return end
+                    if norm(d.FromName) ~= norm(from.Name) and d.FromUserId ~= from.UserId then return end
+                    task.delay(0.8, function()
+                        if abortRequested or buildOpen() then return end
+                        dbg("accepting the request from " .. tostring(d.FromName) .. " with Respond")
+                        respondAccept()
+                    end)
+                end)
+            end
+            local popupSeen = 0
             local accepted = waitFor(function()
                 if abortRequested then return "abort" end
                 if buildOpen() then return "open" end
@@ -12486,11 +12510,14 @@ local TradeAgent = (function()
                             pcall(function() firesignal(btn.Activated) end)
                         end
                         dbg("pressed Accept on the trade request, fired =", tostring(fired))
+                        popupSeen = popupSeen + 1
+                        if not fired or popupSeen >= 2 then respondAccept() end   -- v20: the press did nothing (or the popup is still there): answer with the remote
                         task.wait(1.5)
                     end
                 end
                 return false
             end, 180)
+            if reqConn then reqConn:Disconnect() end
             if accepted == "abort" then cancelTrade() return setTrade(id, "failed", false, "stopped by the site") end
             if not accepted then return setTrade(id, "failed", false, "no request from " .. t.partner .. " in 3 minutes") end
 
