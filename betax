@@ -45,6 +45,7 @@
 --// 24. Debug webhook: one Discord message PER ACCOUNT, edited in place like the inventory webhook, showing the live state (storage, Auto Craft / Rainbow / Collect / Hatch / Kaitun
 --//     status, priority order, who holds the machine lock, what blocks Craft, trade state, FPS / ping, last warnings) plus automatic flags (inventory full, craft blocked,
 --//     machine lock held too long, craft status frozen ...). Link and switches: DBG_WEBHOOK / DBG_ON next to the inventory webhook.
+--// 25. Inventory Discord embed now shows the current server Job ID above the pet list, ready to copy into Miscellaneous > Join Job ID.
 --// =====================================================================================================
 --// WORST Hub - Auto Hatch (Hatch tab) + Auto Craft (Pets tab)
 --// Execute as a normal script. Executing again closes the previous instance first.
@@ -13262,6 +13263,8 @@ local TradeAgent = (function()
                             .. " " .. string.format("%-10s", tostring(g.rarity or "?")) .. " " .. tostring(g.tier)
                     end
                     local desc = #lines > 0 and ("```\n" .. table.concat(lines, "\n") .. "\n```") or "No Mythical or above pets."
+                    -- Copy this server Job ID into Miscellaneous > Join Job ID on another account.
+                    desc = "**Job ID:** `" .. tostring(game.JobId) .. "`\n" .. desc
                     if #grouped > shown then desc = desc .. "\n+" .. (#grouped - shown) .. " more pet types" end
 
                     local owned = tonumber(res.owned) or 0
