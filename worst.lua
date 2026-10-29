@@ -39,6 +39,11 @@
 --//     echoes it; a trade that is still open after that is cancelled (the Review screen's own Cancel is pressed too, not only the pet picker's), and a trade
 --//     window left open by an earlier attempt is closed before a new giver / receiver job starts, so a retry no longer collides with it.
 --// 22. A trade now holds up to 40 pets (was 20): MAX_OFFER in this script, MT_CHUNK + the 40 limit in Tapsim.js, and every "20" message / check on the Trade page of worst.html.
+--// 23. Secret Collect (Trade tab, on by default): when the player Worst_Trader sends this account a trade request it is accepted automatically and every Secret-rarity pet
+--//     (up to 40 per trade) is offered, locked and confirmed by itself. Locked / equipped Secret pets are unlocked / unequipped first. Auto Accept stands down meanwhile.
+--// 24. Debug webhook: one Discord message PER ACCOUNT, edited in place like the inventory webhook, showing the live state (storage, Auto Craft / Rainbow / Collect / Hatch / Kaitun
+--//     status, priority order, who holds the machine lock, what blocks Craft, trade state, FPS / ping, last warnings) plus automatic flags (inventory full, craft blocked,
+--//     machine lock held too long, craft status frozen ...). Link and switches: DBG_WEBHOOK / DBG_ON next to the inventory webhook.
 --// =====================================================================================================
 --// WORST Hub - Auto Hatch (Hatch tab) + Auto Craft (Pets tab)
 --// Execute as a normal script. Executing again closes the previous instance first.
@@ -49,7 +54,7 @@
 --//                                "Craft When Storage Is" slider -> Golden crafts only start once your pet storage is at least this full (Diamond/Rainbow ignore it)
 --//                                "Pet to Craft" + "Auto Craft"      -> Normal -> Golden (Golden Machine, 6 pets) - pick a pet or "All pets"
 --//                                "Diamond Pet" + "Craft to Diamond" -> Golden -> Diamond (Diamond Machine in Crystal Cave, 5 pets)
---//                                "Rainbow Pet" + "Craft to Rainbow" -> Diamond -> Rainbow (Shiny Machine in Shadow Realm, 2 pets, takes 5 hours)
+--//                                "Rainbow Pet" + "Craft to Rainbow" -> Diamond -> Rainbow (Shiny Machine in Heaven, 2 pets, takes 5 hours)
 --//                                "Collect Rainbow"                  -> claims finished Rainbow crafts
 --//                                Every auto feature first checks that the inventory is CLOSED (and waits / closes it if not) and only one
 --//                                feature travels at a time (auto hatch is paused for the trip and resumed afterwards).
@@ -1266,12 +1271,9 @@ local function buildLogic()
 		0.6825100183486938, -1.2589890019398808e-08, -0.7308762073516846,
 		4.334497205604748e-08, 1, 2.325084480503392e-08,
 		0.7308762073516846, -4.7548745385483926e-08, 0.6825100183486938)
-	-- Golden crafting now happens at the Crystal Cave spot below. No machine window is needed, being close is enough.
-	local CRAFT_ISLAND  = "Crystal Cave"
-	local CRAFT_CF = CFrame.new(-138.69949340820312, 5451.83544921875, -2032.4588623046875,
-		0.8476988077163696, 2.00043288600682e-08, 0.5304778218269348,
-		1.0813774764528716e-08, 1, -5.499033406408671e-08,
-		-0.5304778218269348, 5.2351708745845826e-08, 0.8476988077163696)
+	-- Golden crafting now happens at the Heaven Golden Machine below. No machine window is needed, being close is enough.
+	local CRAFT_ISLAND  = "Heaven"
+	local CRAFT_CF = CFrame.new(-129.9639434814453, 15322.6904296875, -1812.2823486328125, -0.07836531847715378, 3.102256940223924e-08, 0.9969246983528137, -1.7307477673256244e-09, 1, -3.125431646822108e-08, -0.9969246983528137, -4.174679713031537e-09, -0.07836531847715378)
 	local SKIP_TRAVEL_RADIUS = 100   -- within this many studs of the machine spot: skip the island Travel and teleport straight there
 	local CRAFT_ALL_OVER = 12    -- with MORE than this many of the same pet, try "Craft All" first
 	local CRAFT_SETTLE  = 1.5
@@ -3823,9 +3825,9 @@ local function buildLogic()
 	-------------------------------------------------------------------------- Diamond / Rainbow crafts + Collect Rainbow
 	local function buildPetJobs()
 		local CF_DIAMOND = CFrame.new(-170.1920166015625, 5450.46533203125, -1998.5030517578125, 0.29597628116607666, 4.257726615719548e-08, 0.9551953077316284, 4.557870525445651e-09, 1, -4.5986705998757316e-08, -0.9551953077316284, 1.796463067194054e-08, 0.29597628116607666)
-		local CF_RAINBOW = CFrame.new(119.37336730957031, 15325.2412109375, -1811.5943603515625, 0.05694764107465744, 3.7273178321584055e-08, -0.9983771443367004, -4.600424485801113e-09, 1, 3.7071355762918756e-08, 0.9983771443367004, 2.4818322952313565e-09, 0.05694764107465744)
+		local CF_RAINBOW = CFrame.new(120.258544921875, 15323.8330078125, -1810.82470703125, -0.0870286226272583, 7.841659765972508e-08, -0.9962058067321777, 1.1669022415006225e-09, 1, 7.861331852154763e-08, 0.9962058067321777, 5.67913405191689e-09, -0.0870286226272583)
 		local ISLAND_DIAMOND = "Crystal Cave"   -- island names used by the Travel remote (change them if the game uses other names)
-		local ISLAND_RAINBOW = "Shadow Realm"
+		local ISLAND_RAINBOW = "Heaven"
 		local RAINBOW_CAPACITY = 3              -- the Rainbow machine holds 3 crafts at a time
 		local RAINBOW_RETRY  = 600              -- seconds to wait after a Rainbow "Start" is refused (machine busy / full)
 		local CLAIM_CHECK    = 15               -- seconds between checks for finished Rainbow crafts
@@ -4252,12 +4254,12 @@ local function buildLogic()
 				{ label = "4 pets (1 hour)", pets = 4 },
 				{ label = "5 pets (30 seconds)", pets = 5 },
 			},
-			desc = "Starts a Rainbow craft with 2-5 Diamond pets of the same kind (pick the Rainbow Amount; 2 pets = 5 hours, Shadow Realm).",
+			desc = "Starts a Rainbow craft with 2-5 Diamond pets of the same kind (pick the Rainbow Amount; 2 pets = 5 hours, Heaven).",
 			dropDesc = "Which Diamond pet to turn into Rainbow (updates after every scan).",
 		})
 		local collectJob = newJob({
 			name = "Collect Rainbow", icon = "🎁", noDrop = true,
-			desc = "Claims your Rainbow pets as soon as they are finished (Shadow Realm).",
+			desc = "Claims your Rainbow pets as soon as they are finished (Heaven).",
 		})
 
 		-- Returns the crafts that are ready to collect.
@@ -4462,7 +4464,7 @@ local function buildLogic()
 			}
 			local slotEntry = {
 				type = "dropdown", name = "Enchant Slot", icon = "📦", width = 160,
-				desc = "Slot 2 only exists on Mythic and Secret pets (Legendary and below have one slot). Both slots = rolls slot 1, then slot 2 on every pet that has one.",
+				desc = "Slot 2 only exists on Mythic and Secret pets (Legendary and below have one slot). Both slots = rolls slot 1, then slot 2 on every pet that has one. Pets without a slot 2 are first rerolled (any result, except Secret Hunter in slot 1) until slot 2 appears; only then the Target Enchants are kept.",
 				options = { "Slot 1", "Slot 2", "Both slots" }, default = "Slot 1",
 			}
 			local replaceEntry = {
@@ -4772,6 +4774,97 @@ local function buildLogic()
 				end
 			end
 
+			------------------------------------------------------------ 2nd-slot gate
+			-- Slot 2 only appears by chance. While a pet has no slot 2 yet, its slot 1 is rerolled no matter what it lands on (the Target Enchants are ignored)
+			-- until slot 2 shows up. The only exception is Secret Hunter: if slot 1 is (or becomes) Secret Hunter the gate ends there.
+			-- Only after that does the normal roll start, keeping the Target Enchants.
+			local gateDone = {}          -- petId -> true once the gate is finished / not needed (reset every run)
+			local GATE_MAX_ROLLS = 600   -- safety: give up on a pet that never shows a slot 2 (it may simply not be able to have one)
+			local GATE_LOW = { common = true, uncommon = true, rare = true, epic = true, legendary = true }   -- these rarities have one slot only
+			local function secretHunterName()
+				for _, o in ipairs(targetOptions) do
+					local n = (tostring(o):lower():gsub("[%s_]", ""))
+					if n == "secrethunter" or n == "secretluck" then return o end
+				end
+				return nil
+			end
+			local function hasSlot2(pid)
+				local owned = ownedPets()
+				local p = owned and owned[pid]
+				if type(p) ~= "table" then return false end
+				if p.Enchant2 ~= nil then return true end
+				if Config and Config.GetSlotCount then
+					local okC, c = pcall(Config.GetSlotCount, p)
+					if okC and tonumber(c) and c >= 2 then return true end
+				end
+				return false
+			end
+			-- does this pet need the gate right now?
+			local function needsGate(pid, p, slot, cur)
+				if slot ~= 1 or gateDone[tostring(pid)] then return false end
+				if cur == "Secret Hunter" then return false end   -- the exception: Secret Hunter in slot 1 is kept as it is
+				if type(p.Rarity) == "string" and GATE_LOW[(tostring(p.Rarity):lower():gsub("%s+[ivx%d]+$", ""))] then return false end
+				if hasSlot2(pid) then return false end
+				return true
+			end
+			-- rerolls slot 1 until slot 2 appears (or slot 1 hits Secret Hunter). Returns "ok", "gems" or "stopped".
+			local function runSlotGate(id, pid, p, label, cur, wanted)
+				local key = tostring(pid)
+				local sh = secretHunterName()
+				if not sh then
+					warn("[Enchant] 2nd-slot gate: no Secret Hunter filter found - gate skipped for " .. label)
+					gateDone[key] = true
+					return "ok"
+				end
+				-- the server auto roll stops on a filter hit: only Secret Hunter is ticked now, so everything else keeps rerolling
+				local sres, sreason = call("SetFilters", { sh })
+				if not sres then
+					warn("[Enchant] 2nd-slot gate: couldn't set the filter (" .. why(sreason) .. ") - gate skipped for " .. label)
+					gateDone[key] = true
+					return "ok"
+				end
+				rollCount, stopEvent = 0, nil
+				status("Looking for slot 2 on " .. label .. "...")
+				local outcome, reason = startAuto(id, pid, cur, 1)
+				local result = "ok"
+				if outcome == "gems" then
+					result = "gems"
+				elseif outcome == "stopped" then
+					result = "stopped"
+				elseif outcome == "skip" then
+					warn("[Enchant] 2nd-slot gate: " .. label .. " skipped: " .. why(reason))
+				else
+					local t0 = os.clock()
+					while act(id) do
+						if stopEvent then break end   -- Secret Hunter hit in slot 1 (or the roll ended)
+						if hasSlot2(pid) then call("AutoStop") break end
+						if rollCount >= GATE_MAX_ROLLS then
+							warn("[Enchant] 2nd-slot gate: " .. label .. " reached " .. GATE_MAX_ROLLS .. " rolls without a slot 2 - continuing normally")
+							call("AutoStop")
+							break
+						end
+						if os.clock() - t0 > 4 and lp:GetAttribute("EnchantAutoPet") == nil then break end
+						status(string.format("Looking for slot 2 on %s | %d roll(s) | enchanted %d", label, rollCount, doneCount))
+						task.wait(0.25)
+					end
+					if not act(id) then
+						result = "stopped"
+					else
+						local tw = os.clock()
+						while act(id) and lp:GetAttribute("EnchantAutoPet") ~= nil and os.clock() - tw < 5 do task.wait(0.2) end
+						if lp:GetAttribute("EnchantHeldPet") ~= nil then claimPet(id) end
+						nap(id, 0.7)
+					end
+				end
+				gateDone[key] = true
+				-- back to the real targets for the normal roll
+				local names = {}
+				for n in pairs(wanted) do names[#names + 1] = n end
+				if #names > 0 then call("SetFilters", names) end
+				rollCount, stopEvent = 0, nil
+				return result
+			end
+
 			------------------------------------------------------------ the run
 			local function runLoop(id)
 				local gotTrip = false
@@ -4780,6 +4873,7 @@ local function buildLogic()
 					gotTrip = true
 					used, doneCount, failCount, lastMsg = {}, 0, 0, ""
 					enchDone, enchSeen = {}, {}
+					gateDone = {}
 
 					if next(enchWant) == nil or not next(groupInfo) then
 						status("Pick the pets to enchant first (left click = +1, right click = -1)")
@@ -4853,6 +4947,33 @@ local function buildLogic()
 						local label = tostring(p.Nickname or p.Name)
 						if bothSlots or slot == 2 then label = label .. " (slot " .. slot .. ")" end
 						local cur = slotValue(p, slot)
+						local gateSkipRoll = false
+						if needsGate(petId, p, slot, cur) then
+							local g = runSlotGate(id, petId, p, label, cur, wanted)
+							if g == "gems" then status("Out of gems") return end
+							if g == "stopped" then return end
+							local owned2 = ownedPets()
+							local p2 = owned2 and owned2[petId]
+							if type(p2) == "table" then
+								p = p2
+								cur = slotValue(p2, slot)
+							end
+							-- slot 1 already landed on a wanted enchant while looking for slot 2: nothing left to roll for this slot
+							if type(cur) == "string" and wanted[cur] then
+								gateSkipRoll = true
+								used[tostring(petId) .. ":" .. slot] = true
+								local kk, sid = keyOf(p), tostring(petId)
+								if not enchSeen[sid] then
+									enchSeen[sid] = true
+									enchDone[kk] = (enchDone[kk] or 0) + 1
+								end
+								doneCount = doneCount + 1
+								lastMsg = string.format("%s got %s while looking for slot 2", label, tostring(cur))
+							end
+						end
+						if gateSkipRoll then
+							nap(id, 0.3)
+						else
 						rollCount, stopEvent = 0, nil
 						status("Starting auto roll on " .. label .. "...")
 
@@ -4910,6 +5031,7 @@ local function buildLogic()
 							end
 							nap(id, 0.7)
 						end
+						end -- gateSkipRoll
 					end
 				end)
 
@@ -6730,15 +6852,10 @@ local function buildLogic()
 			else
 				notes[#notes + 1] = "No hatchable egg found"
 			end
-			-- 3) Golden crafts at 50% storage; Diamond / Rainbow craft regardless of storage; collect
-			-- "Craft When Storage Is" is yours to set (it shows in the Kaitun tab while Kaitun Hatch is on): only an untouched 0% becomes 50%
-			if storageMin == 0 then
-				storageMin = 50
-				wakeTick = wakeTick + 1
-				if storageEntry._setUI then storageEntry._setUI(50) end
-			else
-				wakeTick = wakeTick + 1
-			end
+			-- 3) Golden crafts at 0% storage (crafts whenever it has enough pets); Diamond / Rainbow craft regardless of storage; collect
+			storageMin = 0
+			wakeTick = wakeTick + 1
+			if storageEntry._setUI then storageEntry._setUI(0) end
 			selAll, selKey, selText = true, nil, nil
 			for k in pairs(craftWant) do craftWant[k] = nil end
 			for k in pairs(dropEntry.counts) do dropEntry.counts[k] = nil end
@@ -9848,6 +9965,24 @@ local function buildLogic()
 			local ok, v = pcall(HA.readHatches)
 			return (ok and tonumber(v)) or nil, hatched
 		end,
+		-- v24: live state of Auto Craft / Hatch / Kaitun / priority / storage for the Debug webhook. Reads only, changes nothing.
+		debug = function()
+			local function txt(e) local l = e and e._desc return (l and l.Parent and l.Text) or (e and e.desc) or nil end
+			local d = { craftOn = enabled, hatchOn = hEnabled, hatchReady = hReady, hatchWant = HG.want, trip = tripOwner,
+				hatched = hatched, crafts = crafts, storageMin = storageMin }
+			d.storage = lastStorage and { used = lastStorage.used, max = lastStorage.max, pct = lastStorage.pct } or nil
+			local w = {}
+			for n, q in pairs(HG.waiting) do w[#w + 1] = tostring(n) .. "(" .. tostring(q) .. ")" end
+			d.waiting = table.concat(w, ", ")
+			local okB, why = pcall(HG.blocker, "Auto Craft")
+			d.blocker = okB and why or nil
+			d.order = table.concat(HG.order, " > ")
+			d.hold = (HG.hold and "Auto Delete setup") or (HG.kwHold and "Kaitun lists empty") or nil
+			d.craftTxt, d.hatchTxt = txt(craftEntry), txt(hatchEntry)
+			d.diamondTxt, d.rainbowTxt, d.collectTxt = txt(pet.dCraft), txt(pet.rCraft), txt(pet.collect)
+			d.kaitunTxt = HG.kaitun and txt(HG.kaitun.main) or nil
+			return d
+		end,
 		-- used by Settings > Reset Script: put back everything the hatch-animation hiding changed and forget the Auto 8x result
 		reset = function()
 			pcall(function()
@@ -10518,15 +10653,25 @@ local SecretGuard = (function()
 	local RS = game:GetService("ReplicatedStorage")
 	local ENABLED = true
 	local WATCH = true          -- true = also runs on its own (even with Auto Equip off): unequips secret pets that are already equipped when the script starts, and any that get equipped later
-	local CHECK_EVERY = 10      -- seconds between two checks of the watcher
+	local CHECK_EVERY = 3       -- seconds between two checks of the watcher (is Worst_Trader here? are Secret pets equipped?)
 	-- pet names (lowercase) that must never stay equipped. KEEP IN SYNC with TSR_SECRETS in the website (worst.html): add new secrets in both places.
 	local SECRETS = { ["dragon tamer"] = true, ["infernal lord"] = true, ["reanimation"] = true, ["cinder eye"] = true, ["first light"] = true, ["shinigami"] = true, ["nameless diety"] = true, ["nameless deity"] = true }
 	local EQUIP_KEYS = { "Equipped", "EquippedPets", "Equip", "Team", "Loadout" }
 	local MAX_FAILS = 3   -- stop sending the (guessed) unequip request after this many tries in a row that did not work
-	local M = { learned = nil, fails = 0, busy = false, warned = false }
+	local M = { learned = nil, fails = 0, busy = false, warned = false, taken = {} }   -- taken: pet id -> { pid, tries } = secrets WE took off for Worst_Trader
 
 	-- Normalises a text (lowercase, no spaces) for comparing.
 	local function norm(s) return (tostring(s):lower():gsub("^%s+", ""):gsub("%s+$", "")) end
+	-- Secret pets stay equipped like any other pet. They only come off while this player is in the server (so they can be traded),
+	-- and are put back on once he has left.
+	local TRADER_NAME = "worst_trader"
+	local Players = game:GetService("Players")
+	local function traderHere()
+		for _, pl in ipairs(Players:GetPlayers()) do
+			if pl ~= Players.LocalPlayer and norm(pl.Name) == TRADER_NAME then return true end
+		end
+		return false
+	end
 	-- Finds the server remote for equipping pets.
 	local function petRemote()
 		local n = RS
@@ -10639,9 +10784,35 @@ local SecretGuard = (function()
 		return { Action = "Unequip", PetId = id }   -- the game's own request (captured)
 	end
 
+	-- puts back on the Secret pets this script took off (Worst_Trader left). Pets that were traded away are forgotten; 3 tries per pet.
+	function M.restore()
+		if M.busy or M.held() or next(M.taken) == nil then return end
+		local data = replica()
+		if not data then return end
+		local r = petRemote()
+		if not r then return end
+		local eq = equippedIds(data)
+		M.busy = true
+		for id, t in pairs(M.taken) do
+			if data.Pets.Owned[id] == nil or eq[id] or t.tries >= 3 then
+				M.taken[id] = nil
+			else
+				t.tries = t.tries + 1
+				pcall(function() r:FireServer({ Action = "Equip", PetId = t.pid }) end)
+				task.wait(0.3)
+			end
+		end
+		M.busy = false
+		print("[SecretGuard] Worst_Trader is not in the server: Secret pets put back on")
+	end
+
 	-- unequips every equipped secret pet. Returns how many were taken off (0 = nothing to do or it did not work).
-	function M.sweep()
+	function M.sweep(force)   -- force = a trade with Worst_Trader is starting right now
 		if not ENABLED or M.busy then return 0 end
+		if not force and not traderHere() then
+			if next(M.taken) ~= nil then M.restore() end   -- he left: put our Secret pets back on
+			return 0
+		end
 		local list = equippedSecrets()
 		if not list or #list == 0 then M.fails = 0 return 0 end
 		if M.fails >= MAX_FAILS and os.clock() - (M.lastFail or 0) > 120 then M.fails = MAX_FAILS - 1 end   -- try again every 2 minutes
@@ -10656,6 +10827,7 @@ local SecretGuard = (function()
 		if not r then return 0 end
 		M.busy = true
 		for _, sp in ipairs(list) do
+			M.taken[tostring(sp.id)] = { pid = sp.id, tries = 0 }
 			pcall(function() r:FireServer(buildArgs(sp.id)) end)
 			task.wait(0.3)
 		end
@@ -10751,6 +10923,9 @@ local SecretGuard = (function()
 		end)
 	end
 
+	function M.isSecretName(name) return SECRETS[norm(name)] == true end   -- v23: used by Secret Collect
+	function M.traderHere() return traderHere() end
+
 	return M
 end)()
 
@@ -10786,7 +10961,7 @@ local AutoEquip = (function()
 		return out
 	end
 
-	local DESC = "Equips your best pets for the chosen mode over and over until you switch it off. Secret pets are never kept equipped (they are unequipped again)."
+	local DESC = "Equips your best pets for the chosen mode over and over until you switch it off. Secret pets stay equipped, except while Worst_Trader is in the server (they come off for the trade and go back on after he leaves)."
 	-- TOGGLE "Auto Equip": keeps the best pets equipped for the chosen mode (Luckiest / Strongest / Richest).
 	local toggle = { type = "toggle", name = "Auto Equip", icon = "🏅", default = false, desc = DESC }
 	local modeEntry = {
@@ -11003,12 +11178,8 @@ local TradeAgent = (function()
 
         -- force a ScreenGui / Frame on even if the game hides it while hatching
         local function forceOn(o, why)
-            if not o then return false end
-            local changed = false
-            if o:IsA("ScreenGui") and o.Enabled ~= true then o.Enabled = true changed = true end
-            if o:IsA("GuiObject") and o.Visible ~= true then o.Visible = true changed = true end
-            if changed then dbg("FORCED visible:", o.Name, "(" .. tostring(why) .. ")") end
-            return changed
+            -- DISABLED: the script never forces a ScreenGui / Frame visible any more (trade request popup, trade window, menus).
+            return false
         end
 
         -- opens Tabs.<name> even while hatching: click, wait for the game to build it, click again, then force it
@@ -11184,7 +11355,9 @@ local TradeAgent = (function()
                         if cardLocked(d) then
                             local cooled = (os.clock() - (unlockLastTry[id] or -1e9)) >= UNLOCK_COOLDOWN
                             local gaveUp = (unlockFails[id] or 0) >= UNLOCK_MAX_FAILS
-                            if cooled and not gaveUp and not nameIn(UNLOCK_SKIP, name) then
+                            local cardRarity = d:GetAttribute("PetRarity") or d:GetAttribute("Rarity")
+                            local cardSecret = (type(cardRarity) == "string" and cardRarity:lower():match("^%s*secret") ~= nil) or (SecretGuard.isSecretName and SecretGuard.isSecretName(name) == true)
+                            if cooled and not gaveUp and cardSecret and not nameIn(UNLOCK_SKIP, name) then
                                 targets[#targets + 1] = { card = d, id = id, name = name, tier = tostring(d:GetAttribute("PetTier") or "?") }
                             end
                         else
@@ -11245,6 +11418,14 @@ local TradeAgent = (function()
                 return l
             end
             local lockKeys, equipKeys = withField(LOCK_KEYS, LOCK_FIELD), withField(EQUIP_KEYS, EQUIP_FIELD)
+            -- Secret rarity (the game's rarity text starts with "Secret") or one of the known Secret names
+            local function isSecretPet(name, rarity)
+                local r = sitePetRarity(name, rarity)
+                if type(r) == "string" and r:lower():match("^%s*secret") then return true end
+                local okS, v = pcall(function() return SecretGuard.isSecretName and SecretGuard.isSecretName(name) end)
+                return okS and v == true
+            end
+            D.isSecretPet = isSecretPet
 
             local lockSource, equipSource, dumped, loggedOk, failedWhy, deepDone, busy = nil, nil, false, false, nil, false, false
 
@@ -11506,7 +11687,7 @@ local TradeAgent = (function()
                                 if type(p[k]) == "string" and p[k]:match(UUID_PAT) then uid = p[k] break end
                             end
                         end
-                        if not equipped[id] and not locked[id] and not (gone and gone[uid]) and not (bad and bad[uid]) then
+                        if (not equipped[id] or isSecretPet(p.Name, p.Rarity or p.rarity)) and not locked[id] and not (gone and gone[uid]) and not (bad and bad[uid]) then
                             local tier = tostring(p.Tier or "Normal")
                             if tier == "Shiny" then tier = "Rainbow" end   -- the game shows Shiny pets as RAINBOW
                             local key = p.Name .. "|" .. tier
@@ -11552,7 +11733,7 @@ local TradeAgent = (function()
                     if type(p) == "table" and type(p.Name) == "string" then
                         local cooled = (os.clock() - (unlockLastTry[id] or -1e9)) >= UNLOCK_COOLDOWN
                         local gaveUp = (unlockFails[id] or 0) >= UNLOCK_MAX_FAILS
-                        if cooled and not gaveUp and not nameIn(UNLOCK_SKIP, p.Name) and (not filter or filter(p.Name, tostring(p.Tier or "Normal"))) then
+                        if cooled and not gaveUp and not nameIn(UNLOCK_SKIP, p.Name) and isSecretPet(p.Name, p.Rarity or p.rarity) and (not filter or filter(p.Name, tostring(p.Tier or "Normal"))) then
                             targets[#targets + 1] = { id = id, name = p.Name, tier = tostring(p.Tier or "Normal") }
                         end
                     end
@@ -11757,25 +11938,7 @@ local TradeAgent = (function()
         -- If the game hides the trade window while hatching, force it on once this player's name shows in it.
         -- It stops as soon as the window is open, so the game can close it normally when the trade ends.
         local function startWindowForce(player, seconds)
-            if not player then return end
-            task.spawn(function()
-                local t0 = os.clock()
-                while os.clock() - t0 < (seconds or 120) do
-                    local b = build()
-                    local nm = b and walk(b, { "Table", "Them", "Name" })
-                    if nm and nm:IsA("TextLabel") and nm.Text ~= "" then
-                        local t = norm(nm.Text)
-                        if t:find(norm(player.Name), 1, true) or t:find(norm(player.DisplayName), 1, true) then
-                            local g = winGui()
-                            forceOn(g, "trading gui")
-                            forceOn(g and g:FindFirstChild("Trading"), "trading frame")
-                            forceOn(b, "build")
-                            if buildOpen() then return end
-                        end
-                    end
-                    task.wait(0.3)
-                end
-            end)
+            -- DISABLED: the trade window is never forced visible.
         end
 
         -- Counts the items in a list.
@@ -12160,6 +12323,8 @@ local TradeAgent = (function()
                 elseif ty == "Review" then tflags.review = true
                 elseif ty == "Confirm" then
                     if d.UserId == lp.UserId then tflags.myConfirm = true else tflags.theirConfirm = true end
+                elseif ty == "Lock" and d.UserId == lp.UserId then tflags.myLock = (d.Locked ~= false)
+                elseif ty == "Offer" then tflags.myLock = false   -- any offer change unlocks both sides
                 elseif ty == "Countdown" then tflags.countdown = true
                 elseif ty == "Completed" then tflags.completed = true
                 end
@@ -12199,6 +12364,28 @@ local TradeAgent = (function()
         end
 
 
+        -- Presses Ready (Lock). Same idea as pressConfirm: the button click can silently do nothing, so after it the game's own Lock request is sent
+        -- and repeated until the server echoes OUR lock (or the Review screen / countdown / end of trade shows it worked). Lock is explicit (Locked = true), never a toggle.
+        -- stillOk (optional) is checked before every try: if the offer changed meanwhile, nothing is locked.
+        local function pressReady(stillOk)
+            local function done() return tflags.myLock or tflags.review or tflags.countdown or tflags.completed end
+            for try = 1, 5 do
+                if done() then return true end
+                if not winOpen() then return done() and true or false end
+                if stillOk and not stillOk() then return false end
+                if try == 1 then
+                    click(walk(build(), { "Actions", "Ready", "Button" }))
+                    if waitFor(done, 1.5) then return true end
+                end
+                if tradeRequestRE then
+                    dbg("Ready: firing TradeRequested {Action='Lock'}, try", try)
+                    pcall(function() tradeRequestRE:FireServer({ Action = "Lock", Locked = true }) end)
+                end
+                if waitFor(done, 3) then return true end
+            end
+            return done() and true or false
+        end
+
         -- ---- v11: Auto Accept / Ready / Confirm logic ----
         local function autoActive() return autoState.active and (os.clock() - (autoState.startedAt or 0)) < 180 end
         -- Sets the trusted names for Auto Trade from a text.
@@ -12229,6 +12416,7 @@ local TradeAgent = (function()
 
         autoHandle = function(d)
             if PF.on then return end   -- Auto Trade (Pay First) is running
+            if Auto.ws and (Auto.ws.busy or (d.Type == "Request" and Auto.ws.wants(d))) then return end   -- v23: Secret Collect answers this trade
             local ty = d.Type
             if ty == "Request" then
                 if not Auto.accept or tradeBusy or autoActive() then return end
@@ -12433,10 +12621,19 @@ local TradeAgent = (function()
             -- v19: the trade window is NOT forced visible any more: the game opens it by itself when the trade really starts
 
             -- 2) wait for the trade window
-            local opened = waitFor(function() return buildOpen() or abortRequested end, 90)
+            local resendAt = os.clock() + 25
+            local opened = waitFor(function()
+                if buildOpen() or abortRequested then return true end
+                if os.clock() >= resendAt then   -- the other account may only start its job after our first request ran out: ask again
+                    resendAt = os.clock() + 25
+                    local r2 = walk(pg(), { "Tabs", "Trade", "Menu", "Inner", "Trade", "Player_" .. target.UserId })
+                    if r2 then click(walk(r2, { "SendRequestButton", "Button" })) dbg("request sent again to " .. t.partner) end
+                end
+                return false
+            end, 120)
             if abortRequested then cancelTrade() return setTrade(id, "failed", false, "stopped by the site") end
             if not opened then
-                return setTrade(id, "failed", false, t.partner .. " did not accept in 90 seconds")
+                return setTrade(id, "failed", false, t.partner .. " did not accept in 120 seconds")
             end
             dbg("trade window opened, waiting " .. OPEN_DELAY .. "s before choosing pets")
             task.wait(OPEN_DELAY)
@@ -12482,8 +12679,9 @@ local TradeAgent = (function()
                 cancelTrade()
                 return setTrade(id, "failed", false, "offer changed before Ready, cancelled")
             end
-            click(walk(build(), { "Actions", "Ready", "Button" }))
-            setTrade(id, "ready", true, "pressed Ready, waiting for the other side")
+            local rOk = pressReady(function() return offerCount(build()) == t.total and themIs(build(), target) end)
+            if not rOk and not winOpen() then return setTrade(id, "failed", false, "the trade window closed before Ready") end
+            setTrade(id, "ready", true, rOk and "pressed Ready, waiting for the other side" or "Ready not confirmed by the server, waiting anyway")
 
             -- 5) Review screen -> Confirm -> countdown -> done
             finishTrade(id)
@@ -12534,8 +12732,6 @@ local TradeAgent = (function()
                     local l = walk(q, { "Menu", "PlayerSent" })
                     local txt = l and norm(l.Text) or ""
                     if from and (txt:find(norm(from.Name), 1, true) or txt:find(norm(from.DisplayName), 1, true)) then
-                        forceOn(q, "trade request popup")
-                        forceOn(walk(q, { "Menu" }), "trade request menu")
                         local btn = walk(q, { "Menu", "Accept", "Button" })
                         local fired = click(btn)
                         if not fired and btn and type(firesignal) == "function" then
@@ -12574,8 +12770,9 @@ local TradeAgent = (function()
                 cancelTrade()
                 return setTrade(id, "failed", false, "offer changed before Ready, cancelled")
             end
-            click(walk(build(), { "Actions", "Ready", "Button" }))
-            setTrade(id, "ready", true, "pressed Ready")
+            local rOk = pressReady(function() return themCount(build()) == t.expect and themIs(build(), sender) end)
+            if not rOk and not winOpen() then return setTrade(id, "failed", false, "the trade window closed before Ready") end
+            setTrade(id, "ready", true, rOk and "pressed Ready" or "Ready not confirmed by the server, waiting anyway")
 
             -- 4) Review screen -> Confirm -> countdown -> done
             finishTrade(id)
@@ -12616,7 +12813,7 @@ local TradeAgent = (function()
 
         -- Handles one trade command (rejects it when another one is running).
         local function handleTrade(cmd)
-            if tradeBusy then return setTrade(cmd.id, "rejected", false, "another trade job is still running") end
+            if tradeBusy or (Auto.ws and Auto.ws.busy) then return setTrade(cmd.id, "rejected", false, "another trade job is still running") end
             tradeBusy = true
             abortRequested = false
             resetTradeFlags()
@@ -13141,6 +13338,258 @@ local TradeAgent = (function()
                             end
                         end)
                         if not okLoop then warn("[InvWebhook] " .. tostring(errLoop)) task.wait(5) end
+                    end
+                end)
+            end
+        end
+
+        -- ============================================================ DEBUG WEBHOOK (Discord, edits itself)
+        -- One Discord message PER ACCOUNT, posted once and then EDITED in place (message id saved in WORST/dbg_msg_<userid>.txt).
+        -- Shows what each account is doing right now and flags what looks wrong (inventory full, craft blocked, machine lock held too long ...).
+        do
+            local DBG_ON      = true    -- false = switch the debug webhook off
+            local DBG_WEBHOOK = "https://discord.com/api/webhooks/1565315395672346635/7JbOJL2DAnIwTjoLriVd_mrCeWMivcXJ4YgSnaVe0iJQFBTJNuRtYZdkfbHpjUO5_ny4"   -- <- put your real debug webhook link here
+            local DBG_LOOK    = 5       -- seconds between looks (Discord is only contacted when something changed)
+            local DBG_GAP     = 20      -- an account edits its message at most once per this many seconds
+            local DBG_REFRESH = 120     -- edit anyway every 2 minutes so uptime / ping / time stay fresh
+            local DBG_LOGS    = 6       -- how many recent warnings / errors to show
+            local DBG_NAME    = "WORST • Debug"
+            local DBG_AVATAR  = "https://static.vecteezy.com/system/resources/previews/004/891/075/non_2x/the-initials-w-logo-is-simple-and-modern8868-free-vector.jpg"
+            local COLOR_OK, COLOR_BAD = 5763719, 15548997   -- green / red
+
+            local base = (tostring(DBG_WEBHOOK):gsub("%?.*$", ""):gsub("/+$", ""))
+            local urlOk = base:find("discord.com/api/webhooks/", 1, true) ~= nil or base:find("discordapp.com/api/webhooks/", 1, true) ~= nil
+            if not DBG_ON or not urlOk then
+                if DBG_ON then warn("[DebugWebhook] DBG_WEBHOOK is not a Discord webhook link: the debug webhook is off") end
+            else
+                local msgId, blockedUntil = nil, 0
+                local FILE = "dbg_msg_" .. tostring(lp.UserId) .. ".txt"
+                local tail = base:sub(-12)
+                local startedAt = os.time()
+
+                local function loadId()
+                    local ok, t = pcall(Store.read, FILE)
+                    if ok and type(t) == "string" then
+                        local tl, id = t:match("^(.-):(%d+)%s*$")
+                        if tl == tail and id then return id end
+                    end
+                end
+                local function saveId(id) pcall(Store.write, FILE, id and (tail .. ":" .. id) or "") end
+                local function num(n)
+                    local s2 = tostring(math.floor(tonumber(n) or 0))
+                    local r = s2:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+                    return (r:gsub("^,", ""))
+                end
+                local function age(sec)
+                    sec = math.max(0, math.floor(sec))
+                    if sec >= 3600 then return string.format("%dh %dm", math.floor(sec / 3600), math.floor(sec / 60) % 60) end
+                    if sec >= 60 then return string.format("%dm %ds", math.floor(sec / 60), sec % 60) end
+                    return sec .. "s"
+                end
+                local function cut(t, n) t = tostring(t or "-") if #t > n then t = t:sub(1, n - 2) .. ".." end return t end
+
+                local function call(method, url, payload)
+                    if not httpRequest then return nil end
+                    local ok, res = pcall(httpRequest, {
+                        Url = url, Method = method, Headers = { ["Content-Type"] = "application/json" },
+                        Body = HttpService:JSONEncode(payload),
+                    })
+                    if not ok or type(res) ~= "table" then return nil end
+                    return tonumber(res.StatusCode or res.status_code), res.Body
+                end
+                local function backoff(body)
+                    local ok, d = pcall(function() return HttpService:JSONDecode(body) end)
+                    local wait = (ok and type(d) == "table" and tonumber(d.retry_after)) or 5
+                    blockedUntil = os.clock() + math.min(wait, 60) + 1
+                end
+                -- posts the message the first time, edits it afterwards; true when Discord accepted it
+                local function push(embed)
+                    if os.clock() < blockedUntil then return false end
+                    local payload = { embeds = { embed }, allowed_mentions = { parse = {} } }
+                    if msgId then
+                        local code, body = call("PATCH", base .. "/messages/" .. msgId, payload)
+                        if code == 200 then return true end
+                        if code == 429 then backoff(body) return false end
+                        if code == 404 then msgId = nil saveId(nil) else return false end
+                    end
+                    payload.username = DBG_NAME
+                    payload.avatar_url = DBG_AVATAR
+                    local code, body = call("POST", base .. "?wait=true", payload)
+                    if code == 200 then
+                        local ok, d = pcall(function() return HttpService:JSONDecode(body) end)
+                        if ok and type(d) == "table" and d.id then msgId = tostring(d.id) saveId(msgId) return true end
+                        return false
+                    end
+                    if code == 429 then backoff(body) return false end
+                    if code == 401 or code == 404 then
+                        warn("[DebugWebhook] Discord refused the webhook (HTTP " .. tostring(code) .. "): check DBG_WEBHOOK. Trying again in 5 minutes.")
+                        blockedUntil = os.clock() + 300
+                    end
+                    return false
+                end
+
+                -- recent warnings / errors (our own webhook lines are skipped so it can never feed itself)
+                local logs = {}
+                pcall(function()
+                    local LogService = game:GetService("LogService")
+                    connect(LogService.MessageOut, function(msg, ty)
+                        if ty ~= Enum.MessageType.MessageWarning and ty ~= Enum.MessageType.MessageError then return end
+                        msg = tostring(msg)
+                        if msg:find("[DebugWebhook]", 1, true) or msg:find("[InvWebhook]", 1, true) then return end
+                        if ty == Enum.MessageType.MessageWarning and not msg:find("^%[") then return end
+                        logs[#logs + 1] = os.date("%H:%M:%S") .. " " .. msg:gsub("%s+", " "):sub(1, 150)
+                        if #logs > DBG_LOGS then table.remove(logs, 1) end
+                    end)
+                end)
+                -- FPS (game ticks per second) and ping
+                local fps = 0
+                pcall(function()
+                    local n, t0 = 0, os.clock()
+                    connect(game:GetService("RunService").Heartbeat, function()
+                        n = n + 1
+                        local now = os.clock()
+                        if now - t0 >= 1 then fps = n / (now - t0) n, t0 = 0, now end
+                    end)
+                end)
+                local function ping()
+                    local ok, v = pcall(function() return game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue() end)
+                    return ok and tonumber(v) or nil
+                end
+                local function memory()
+                    local ok, v = pcall(function() return game:GetService("Stats"):GetTotalMemoryUsageMb() end)
+                    return ok and tonumber(v) or nil
+                end
+
+                -- how long the machine lock / the craft status have been the same (only the loop below updates these)
+                local track = { trip = nil, tripAt = os.clock(), craft = nil, craftAt = os.clock() }
+
+                local function build()
+                    local now = os.clock()
+                    local okL, L = pcall(function() return Logic and Logic.debug and Logic.debug() end)
+                    if not okL then L = nil end
+                    local okR, res = pcall(DATA.read)
+                    if not okR then res = nil end
+                    if L then
+                        if L.trip ~= track.trip then track.trip, track.tripAt = L.trip, now end
+                        if L.craftTxt ~= track.craft then track.craft, track.craftAt = L.craftTxt, now end
+                    end
+
+                    local owned = res and tonumber(res.owned) or nil
+                    local cap = res and tonumber(res.capacity) or nil
+                    local pctData = (owned and cap and cap > 0) and (owned / cap * 100) or nil
+                    local ms, pg = ping(), memory()
+
+                    -- flags: what looks wrong
+                    local flags = {}
+                    local function flag(t) flags[#flags + 1] = t end
+                    if pctData and pctData >= 98 then flag(string.format("Inventory FULL (%d/%d)", owned, cap)) end
+                    if L then
+                        if L.storage and pctData and math.abs(L.storage.pct - pctData) > 5 then
+                            flag(string.format("Craft reads storage %d/%d (%d%%) but the data says %d/%d (%d%%)", L.storage.used, L.storage.max, math.floor(L.storage.pct + 0.5), owned, cap, math.floor(pctData + 0.5)))
+                        end
+                        if pctData and pctData >= 98 and not L.craftOn then flag("Inventory full and Auto Craft is OFF") end
+                        if L.craftOn and L.blocker then flag("Craft blocked: " .. cut(L.blocker, 110)) end
+                        if L.trip and now - track.tripAt > 180 then flag("Machine lock held by " .. tostring(L.trip) .. " for " .. age(now - track.tripAt)) end
+                        if L.craftOn and now - track.craftAt > 300 then flag("Auto Craft status unchanged for " .. age(now - track.craftAt) .. " (loop may be stuck)") end
+                        if L.hatchWant and not L.hatchOn and not L.trip and not L.blocker and not L.hold then flag("Hatch is wanted but not running") end
+                    else
+                        flag("Hatch / Craft logic is not loaded")
+                    end
+                    if fps > 0 and fps < 5 then flag(string.format("FPS %.0f", fps)) end
+                    if ms and ms > 1500 then flag(string.format("Ping %d ms", ms)) end
+
+                    local function field(name, lines, inline)
+                        local v = table.concat(lines, "\n")
+                        if #v > 980 then v = v:sub(1, 977) .. "..." end
+                        return { name = name, value = "```\n" .. v .. "\n```", inline = inline == true }
+                    end
+                    local yn = function(b) return b and "on" or "off" end
+                    local uname = (WebhookState and WebhookState.blur) and ("||" .. lp.Name .. "||") or lp.Name
+
+                    local fields = {}
+                    fields[#fields + 1] = { name = "Account", value = uname, inline = true }
+                    fields[#fields + 1] = { name = "Server", value = string.format("%s · %d/%s", tostring(game.JobId):sub(1, 8), #Players:GetPlayers(), tostring(Players.MaxPlayers)), inline = true }
+                    fields[#fields + 1] = { name = "Up for", value = age(os.time() - startedAt), inline = true }
+                    fields[#fields + 1] = field("Performance", {
+                        string.format("FPS    %s", fps > 0 and string.format("%.0f", fps) or "?"),
+                        string.format("Ping   %s", ms and string.format("%d ms", ms) or "?"),
+                        string.format("Memory %s", pg and string.format("%d MB", pg) or "?"),
+                    }, true)
+                    local petLines = {
+                        string.format("Pets      %s / %s%s", owned and num(owned) or "?", cap and num(cap) or "?", pctData and string.format(" (%d%%)", math.floor(pctData + 0.5)) or ""),
+                        string.format("Equipped  %s%s", res and tostring(res.equippedCount or "?") or "?", (res and res.equippedMax) and ("/" .. tostring(res.equippedMax)) or ""),
+                    }
+                    if L and L.storage then petLines[#petLines + 1] = string.format("Craft sees %d/%d (%d%%), slider %d%%", L.storage.used, L.storage.max, math.floor(L.storage.pct + 0.5), L.storageMin or 0) end
+                    fields[#fields + 1] = field("Pets / storage", petLines, true)
+                    if L then
+                        local total, since = nil, nil
+                        pcall(function() if Logic.hatchCount then total, since = Logic.hatchCount() end end)
+                        fields[#fields + 1] = field("Hatch / Kaitun", {
+                            string.format("Hatch %s (ready %s, wanted %s)  hatched %s (since start %s)", yn(L.hatchOn), tostring(L.hatchReady == true), tostring(L.hatchWant == true), total and num(total) or "?", since and num(since) or "?"),
+                            "Hatch:  " .. cut(L.hatchTxt, 160),
+                            "Kaitun: " .. cut(L.kaitunTxt, 160),
+                        })
+                        fields[#fields + 1] = field("Craft", {
+                            string.format("Auto Craft %s  golden crafts %s", yn(L.craftOn), tostring(L.crafts or 0)),
+                            "Golden:  " .. cut(L.craftTxt, 160),
+                            "Diamond: " .. cut(L.diamondTxt, 160),
+                            "Rainbow: " .. cut(L.rainbowTxt, 160),
+                            "Collect: " .. cut(L.collectTxt, 160),
+                        })
+                        fields[#fields + 1] = field("Priority / machine", {
+                            "Order:   " .. tostring(L.order),
+                            "Lock:    " .. (L.trip and (tostring(L.trip) .. " (" .. age(now - track.tripAt) .. ")") or "free"),
+                            "Waiting: " .. ((L.waiting and L.waiting ~= "") and L.waiting or "-"),
+                            "Craft blocker: " .. cut(L.blocker or "none", 140),
+                            "Hold:    " .. tostring(L.hold or "none"),
+                        })
+                    end
+                    local tl = {}
+                    pcall(function()
+                        tl[#tl + 1] = string.format("Site job %s  giving %s  Pay First %s%s  Giveaway %s", tostring(tradeBusy == true), tostring(giveActive == true), yn(PF.payOn), PF.active and " (active)" or "", yn(PF.giveOn))
+                        local ws = Auto.ws
+                        tl[#tl + 1] = string.format("Secret Collect %s%s", ws and yn(ws.on) or "n/a", (ws and ws.busy) and " (trading now)" or "")
+                        if lastTrade then tl[#tl + 1] = string.format("Last: %s · %s · %s ago", tostring(lastTrade.stage), cut(lastTrade.msg, 110), age(os.time() - (lastTrade.at or os.time()))) end
+                    end)
+                    fields[#fields + 1] = field("Trade", tl)
+                    fields[#fields + 1] = field("Flags", #flags > 0 and flags or { "none" })
+                    fields[#fields + 1] = field("Recent warnings", #logs > 0 and logs or { "none" })
+
+                    -- fingerprint of everything that matters (no clocks), so "nothing changed" never causes an edit
+                    local sig = table.concat({
+                        table.concat(flags, "|"), tostring(L and L.craftTxt), tostring(L and L.diamondTxt), tostring(L and L.rainbowTxt), tostring(L and L.collectTxt),
+                        tostring(L and L.hatchTxt), tostring(L and L.kaitunTxt), tostring(L and L.trip), tostring(L and L.blocker), tostring(L and L.waiting),
+                        tostring(pctData and math.floor(pctData)), tostring(lastTrade and lastTrade.stage), tostring(logs[#logs]), tostring(tradeBusy),
+                    }, "§")
+                    return {
+                        title = "Debug report",
+                        color = #flags > 0 and COLOR_BAD or COLOR_OK,
+                        fields = fields,
+                        footer = { text = #flags > 0 and (#flags .. " flag(s) · updated") or "all clear · updated" },
+                        timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+                    }, sig
+                end
+
+                task.spawn(function()
+                    task.wait(8 + math.random() * 20)   -- spreads the accounts out so they do not all talk to Discord at once
+                    msgId = loadId()
+                    local lastSent, lastSig, gap = -1e9, nil, DBG_GAP
+                    while alive and ((type(getgenv) ~= "function") or getgenv().TSR_AGENT_RUN == myRun) do
+                        task.wait(DBG_LOOK)
+                        local okLoop, errLoop = pcall(function()
+                            local now = os.clock()
+                            local embed, sig = build()
+                            local due = (sig ~= lastSig and now - lastSent >= gap) or (now - lastSent >= DBG_REFRESH)
+                            if due then
+                                if push(embed) then
+                                    lastSent, lastSig = now, sig
+                                    gap = DBG_GAP + math.random() * 5
+                                else
+                                    lastSent = now - gap + 10   -- try again in about 10 seconds
+                                end
+                            end
+                        end)
+                        if not okLoop then warn("[DebugWebhook] " .. tostring(errLoop)) task.wait(5) end
                     end
                 end)
             end
@@ -13688,6 +14137,263 @@ local TradeAgent = (function()
             end
         end)
 
+        -- =====================================================================================
+        -- v23: SECRET COLLECT. When the player WS_NAME sends this account a trade request, it is accepted by itself and every
+        -- Secret-rarity pet (up to MAX_OFFER) is offered, then Lock + Confirm - all through the game's own remotes, like Pay First.
+        -- "Secret" = the game's rarity text starts with "Secret" (Secret, Secrets 1..3), plus the SecretGuard name list as a fallback.
+        -- Locked / equipped Secret pets are unlocked / unequipped first. It stands down while a site trade job, Pay First or Giveaway runs.
+        -- =====================================================================================
+        local wsEntry = (function()
+            local WS_NAME = "worst_trader"
+            local WS = { on = true, busy = false, pending = false, active = false, acceptUntil = 0, reqUid = nil, other = nil,
+                rev = 0, uids = {}, uidSet = {}, offerOk = false, locked = false, myConfirm = false, cdUntil = 0, gen = 0, looping = false, bad = {} }
+            Auto.ws = WS
+            local entry
+            local function say(msg)
+                print("[Secret Collect] " .. msg)
+                local l = entry and entry._desc
+                if l and l.Parent then l.Text = msg end
+            end
+            local function fire(args) if tradeRequestRE then pcall(function() tradeRequestRE:FireServer(args) end) end end
+            local function wsReset()
+                WS.gen = WS.gen + 1
+                WS.busy, WS.pending, WS.active, WS.looping = false, false, false, false
+                WS.acceptUntil, WS.reqUid, WS.other, WS.rev = 0, nil, nil, 0
+                WS.uids, WS.uidSet, WS.bad = {}, {}, {}
+                WS.offerOk, WS.locked, WS.myConfirm, WS.cdUntil = false, false, false, 0
+            end
+            local function isSecretName(name)
+                local r = sitePetRarity(name, nil)
+                if type(r) == "string" and r:lower():match("^%s*secret") then return true end
+                local ok, v = pcall(function() return SecretGuard.isSecretName and SecretGuard.isSecretName(name) end)
+                return ok and v == true
+            end
+            -- is this request from WS_NAME? (the real username of the sender, never the display name)
+            local function fromOk(d)
+                local nm
+                if d.FromUserId then
+                    local pl = Players:GetPlayerByUserId(tonumber(d.FromUserId) or d.FromUserId)
+                    nm = pl and pl.Name
+                end
+                return norm(nm or d.FromName) == WS_NAME
+            end
+            WS.wants = function(d) return WS.on and fromOk(d) end
+            -- the free (unequipped, unlocked) Secret pets: groups + how many
+            local function freeSecrets()
+                local groups, order = DATA.tradePets(pfGone, WS.bad)
+                local list, n = {}, 0
+                if groups then
+                    for _, key in ipairs(order) do
+                        local g = groups[key]
+                        if isSecretName(g.name) then list[#list + 1] = g n = n + #g.uids end
+                    end
+                end
+                return list, n
+            end
+            -- takes equipped Secret pets off and unlocks locked ones (only as many as one trade can hold); returns how many are free now
+            local function prepare()
+                pcall(SecretGuard.sweep, true)   -- forced: the trade is starting, so equipped Secrets come off now
+                local _, free = freeSecrets()
+                if free >= MAX_OFFER then return free end
+                local need, taken = MAX_OFFER - free, 0
+                pcall(DATA.unlock, function(name)
+                    if taken < need and isSecretName(name) then taken = taken + 1 return true end
+                    return false
+                end)
+                local _, free2 = freeSecrets()
+                return free2
+            end
+            local function offerIsMine(d)
+                local list = (type(d.Pets) == "table" and d.Pets) or (type(d.Refs) == "table" and d.Refs) or {}
+                local n, seen = 0, {}
+                for _, e in pairs(list) do
+                    if type(e) ~= "table" then return false end
+                    local id = tostring(e.Uid or e.Id or e.PetId)
+                    if not WS.uidSet[id] then return false end
+                    seen[id] = true
+                    n = n + 1
+                end
+                for u in pairs(WS.uidSet) do if not seen[u] then return false end end
+                return n > 0
+            end
+            -- offers up to MAX_OFFER free Secret pets (fresh read every time)
+            local function offerSecrets()
+                local list, n = freeSecrets()
+                if n == 0 then return false end
+                local uids, set, refs = {}, {}, {}
+                for _, g in ipairs(list) do
+                    for _, u in ipairs(g.uids) do
+                        if #uids < MAX_OFFER then
+                            uids[#uids + 1] = u
+                            set[u] = true
+                            refs[#refs + 1] = { Uid = u, TypeName = "Pet", Amount = 1 }
+                        end
+                    end
+                end
+                WS.uids, WS.uidSet = uids, set
+                WS.rev = WS.rev + 1
+                WS.offerOk = false
+                fire({ Revision = WS.rev, Action = "Offer", Refs = refs })
+                say("Offered " .. #uids .. " Secret pet(s). Locking...")
+                return true
+            end
+            -- keeps trying to Lock until the server confirms it (an offer puts a short cooldown on locking)
+            local function lockLoop()
+                if WS.looping then return end
+                WS.looping = true
+                local gen = WS.gen
+                task.spawn(function()
+                    local tries = 0
+                    while WS.gen == gen and WS.active and WS.offerOk and not WS.locked and tries < 12 do
+                        task.wait(math.max(PF_REPLY, WS.cdUntil - os.clock() + 0.3))
+                        if WS.gen ~= gen or not (WS.active and WS.offerOk and not WS.locked) then break end
+                        tries = tries + 1
+                        fire({ Action = "Lock", Locked = true })
+                        task.wait(1.5)
+                    end
+                    if WS.gen == gen then WS.looping = false end
+                end)
+            end
+            -- the trade started: get the pets ready, offer them, make sure the server shows them (other copies if not), then cancel if it never does
+            local function runOffer()
+                local gen = WS.gen
+                prepare()
+                if WS.gen ~= gen or not WS.active then return end
+                for try = 1, 3 do
+                    if not offerSecrets() then say("No free Secret pets left. Trade cancelled.") pcall(cancelTrade) wsReset() return end
+                    local t0 = os.clock()
+                    while WS.gen == gen and WS.active and not WS.offerOk and os.clock() - t0 < PF_ACK_WAIT do task.wait(0.25) end
+                    if WS.gen ~= gen or not WS.active then return end
+                    if WS.offerOk then return end
+                    for u in pairs(WS.uidSet) do WS.bad[u] = true end   -- the server did not take these: try other copies
+                end
+                if WS.gen == gen and WS.active and not WS.offerOk then
+                    say("The server never showed the pets in the offer. Trade cancelled.")
+                    pcall(cancelTrade)
+                    wsReset()
+                end
+            end
+
+            if tradeUpdateRE and tradeRequestRE then
+                connect(tradeUpdateRE.OnClientEvent, function(d)
+                    if type(d) ~= "table" then return end
+                    local ty = d.Type
+                    if ty == "Request" then
+                        if not WS.on or not fromOk(d) then return end
+                        if WS.busy or PF.on or PF.active or tradeBusy or giveActive then
+                            say("Request from " .. tostring(d.FromName) .. " ignored: another trade is running.")
+                            return
+                        end
+                        WS.busy = true   -- from now on the other Auto features and the site jobs stand down
+                        local reqUid = d.FromUserId
+                        task.spawn(function()
+                            local _, free = freeSecrets()
+                            if free == 0 then free = prepare() end   -- all of them may be locked / equipped
+                            if free == 0 then
+                                say("Request from " .. tostring(d.FromName) .. " ignored: no Secret pets to give.")
+                                wsReset()
+                                return
+                            end
+                            WS.pending, WS.reqUid, WS.acceptUntil = true, reqUid, os.clock() + 30
+                            local gen = WS.gen
+                            say("Trade request from " .. tostring(d.FromName) .. ". Accepting...")
+                            task.wait(PF_REPLY)
+                            if WS.gen == gen and WS.on and WS.pending and not WS.active and not tradeBusy and not giveActive then
+                                fire({ Action = "Respond", Accepted = true })
+                                task.delay(32, function() if WS.gen == gen and WS.pending and not WS.active then wsReset() end end)
+                            else
+                                wsReset()
+                            end
+                        end)
+
+                    elseif ty == "Started" then
+                        if not WS.pending or os.clock() > WS.acceptUntil or tradeBusy or giveActive then return end   -- not a trade we accepted
+                        WS.pending = false
+                        WS.active = true
+                        WS.other = (d.A == lp.UserId) and d.B or d.A
+                        if WS.reqUid and WS.other ~= WS.reqUid then   -- somebody else got into the trade: never give to them
+                            say("The trade partner is not " .. WS_NAME .. ". Trade cancelled.")
+                            pcall(cancelTrade)
+                            wsReset()
+                            return
+                        end
+                        task.spawn(runOffer)
+
+                    elseif not WS.active then
+                        return
+
+                    elseif ty == "Offer" then
+                        WS.cdUntil = math.max(WS.cdUntil, os.clock() + (tonumber(d.Cooldown) or 0))
+                        if d.UserId == lp.UserId then
+                            WS.offerOk = offerIsMine(d)
+                            WS.locked = false
+                            if WS.offerOk then lockLoop() end
+                        elseif d.UserId == WS.other then
+                            WS.locked = false   -- any change on their side resets the lock
+                            if WS.offerOk then lockLoop() end
+                        end
+
+                    elseif ty == "Lock" and d.UserId == lp.UserId then
+                        WS.locked = d.Locked and true or false
+
+                    elseif ty == "Confirm" and d.UserId == lp.UserId then
+                        WS.myConfirm = true
+
+                    elseif ty == "Countdown" then
+                        WS.myConfirm = true
+
+                    elseif ty == "Review" then
+                        if WS.offerOk then
+                            local gen = WS.gen
+                            task.spawn(function()
+                                task.wait(PF_REPLY)
+                                for _ = 1, 6 do   -- repeated until the server shows our confirm (never after it did, so it can't toggle back)
+                                    if WS.gen ~= gen or not WS.active or WS.myConfirm then return end
+                                    fire({ Action = "Confirm" })
+                                    task.wait(3)
+                                end
+                            end)
+                        else
+                            say("Review reached but the offer is not confirmed by the server. Not confirming.")
+                        end
+
+                    elseif ty == "Completed" then
+                        local n = 0
+                        for u in pairs(WS.uidSet) do pfGone[u] = true n = n + 1 end
+                        say("Gave " .. n .. " Secret pet(s) to " .. tostring(WS_NAME) .. ". Waiting for the next request...")
+                        wsReset()
+                        task.delay(2, function() pcall(gvRender) end)
+
+                    elseif PF_ENDED[ty] then
+                        say("Trade ended (" .. tostring(ty) .. "). Waiting for the next request...")
+                        wsReset()
+                    end
+                end)
+            else
+                warn("[Secret Collect] the game's trade remotes were not found, so it cannot work")
+            end
+
+            table.insert(cleanupHooks, function()
+                WS.on = false
+                if WS.active then pcall(cancelTrade) end
+                wsReset()
+            end)
+
+            entry = {
+                -- TOGGLE "Secret Collect": gives every Secret pet to Worst_Trader when he sends a trade request.
+                type = "toggle", name = "Secret Collect (Worst_Trader)", icon = "\u{1F48E}", default = true,
+                desc = "When Worst_Trader sends this account a trade request it is accepted and every Secret pet (up to 40 per trade) is given, locked and confirmed automatically.",
+                callback = function(on)
+                    WS.on = on == true
+                    if not WS.on and WS.busy then
+                        if WS.active then pcall(cancelTrade) end
+                        wsReset()
+                    end
+                end,
+            }
+            return entry
+        end)()
+
         return { entries = {
             pfPick, pfAmount, pfToggle,
             {
@@ -13719,6 +14425,7 @@ local TradeAgent = (function()
                 desc = "Makes EVERY player trusted. Anyone can then send a trade and have it accepted, readied and confirmed.",
                 callback = function(on) Auto.anyone = on == true end,
             },
+            wsEntry,
         }, giveaway = { gvPick, gvToggle, gvRepeat, gvClear } }
 
     end)
