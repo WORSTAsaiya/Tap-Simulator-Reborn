@@ -41,6 +41,7 @@
 --// 22. A trade now holds up to 40 pets (was 20): MAX_OFFER in this script, MT_CHUNK + the 40 limit in Tapsim.js, and every "20" message / check on the Trade page of worst.html.
 --// 23. Secret Collect (Trade tab, on by default): when the player Worst_Trader sends this account a trade request it is accepted automatically and every Secret-rarity pet
 --//     (up to 40 per trade) is offered, locked and confirmed by itself. Locked / equipped Secret pets are unlocked / unequipped first. Auto Accept stands down meanwhile.
+--// 25. Site Trade / Multi Trade: send requests directly via TradingService TradeRequested Request; receiver accepts only the expected FromUserId via Respond. No GUI send/accept clicks.
 --// 24. Debug webhook: one Discord message PER ACCOUNT, edited in place like the inventory webhook, showing the live state (storage, Auto Craft / Rainbow / Collect / Hatch / Kaitun
 --//     status, priority order, who holds the machine lock, what blocks Craft, trade state, FPS / ping, last warnings) plus automatic flags (inventory full, craft blocked,
 --//     machine lock held too long, craft status frozen ...). Link and switches: DBG_WEBHOOK / DBG_ON next to the inventory webhook.
@@ -11188,7 +11189,6 @@ local TradeAgent = (function()
         --   * up to 4 attempts, each with a different way of pressing the button: connections -> firesignal -> real mouse click (VirtualInputManager)
         --   * the menu state is re-checked right before every press, so a late opening is never "toggled shut" by the next press
         --   * the button is looked up again on every attempt (the game rebuilds its HUD after hatching / teleports)
-        local OPEN_MENU_WHY = nil
         local function openMenu(name, btnPath)
             local function gui() return walk(pg(), { "Tabs", name }) end
             local function on() local g = gui() return g ~= nil and g.Enabled == true end
@@ -11251,26 +11251,6 @@ local TradeAgent = (function()
                 end
             end
 
-            do   -- v23: remember WHY it failed so the site shows it
-                local btn = walk(pg(), btnPath)
-                local why = {}
-                if not walk(pg(), { "Game" }) then why[#why + 1] = "no Game gui"
-                elseif not btn then why[#why + 1] = "Trade button missing at " .. table.concat(btnPath, ">")
-                else
-                    local par = btn
-                    while par and par ~= pg() do
-                        if par:IsA("GuiObject") and not par.Visible then why[#why + 1] = par.Name .. " hidden" break end
-                        if par:IsA("ScreenGui") and not par.Enabled then why[#why + 1] = par.Name .. " disabled" break end
-                        par = par.Parent
-                    end
-                end
-                if not gui() then why[#why + 1] = "Tabs." .. name .. " does not exist (trade locked on this account?)" end
-                local tabs = walk(pg(), { "Tabs" })
-                local openOnes = {}
-                if tabs then for _, g in ipairs(tabs:GetChildren()) do if g:IsA("ScreenGui") and g.Enabled then openOnes[#openOnes + 1] = g.Name end end end
-                if #openOnes > 0 then why[#why + 1] = "open menus: " .. table.concat(openOnes, ",") end
-                OPEN_MENU_WHY = #why > 0 and table.concat(why, "; ") or "button pressed 4x, menu stayed closed"
-            end
             dbg(name .. " still closed, forcing it open")
             forceOn(gui(), name)
             forceOn(walk(gui(), { "Menu" }), name .. " menu")
@@ -12682,16 +12662,21 @@ local TradeAgent = (function()
             end)
             if next(petIndex) == nil then return setTrade(id, "failed", false, "no pets found in the pet data") end
 
-            -- 1) open the Trade menu (also while hatching) and send the request
-            if not openMenu("Trade", { "Game", "LeftButtons", "Trade", "Button" }) then
-                return setTrade(id, "failed", false, "trade menu did not open (" .. tostring(OPEN_MENU_WHY) .. ")")
+            -- 1) send the trade request directly through the game's TradingService remote.
+            -- No Trade menu, player-list row, or GUI button is required.
+            if not tradeRequestRE then
+                return setTrade(id, "failed", false, "TradingService TradeRequested remote not found")
             end
-            local row = waitFor(function()
-                return walk(pg(), { "Tabs", "Trade", "Menu", "Inner", "Trade", "Player_" .. target.UserId })
-            end, 8)
-            if not row then return setTrade(id, "failed", false, t.partner .. " is not in the trade list (their trade setting?)") end
-            if not click(walk(row, { "SendRequestButton", "Button" })) then
-                return setTrade(id, "failed", false, "could not press Trade")
+            local function sendRequest()
+                if not target or target.Parent ~= Players then return false end
+                local ok, why = pcall(function()
+                    tradeRequestRE:FireServer({ Action = "Request", TargetUserId = target.UserId })
+                end)
+                if not ok then dbg("remote trade request failed: " .. tostring(why)) end
+                return ok
+            end
+            if not sendRequest() then
+                return setTrade(id, "failed", false, "could not send trade request through remote")
             end
             setTrade(id, "requested", true, "request sent to " .. t.partner .. ", waiting for them to accept")
             -- v19: the trade window is NOT forced visible any more: the game opens it by itself when the trade really starts
@@ -12700,10 +12685,9 @@ local TradeAgent = (function()
             local resendAt = os.clock() + 25
             local opened = waitFor(function()
                 if buildOpen() or abortRequested then return true end
-                if os.clock() >= resendAt then   -- the other account may only start its job after our first request ran out: ask again
+                if os.clock() >= resendAt then
                     resendAt = os.clock() + 25
-                    local r2 = walk(pg(), { "Tabs", "Trade", "Menu", "Inner", "Trade", "Player_" .. target.UserId })
-                    if r2 then click(walk(r2, { "SendRequestButton", "Button" })) dbg("request sent again to " .. t.partner) end
+                    if sendRequest() then dbg("remote trade request resent to " .. t.partner) end
                 end
                 return false
             end, 120)
@@ -12720,7 +12704,7 @@ local TradeAgent = (function()
                 return setTrade(id, "failed", false, "the other side is not " .. t.partner .. ", cancelled")
             end
 
-            closeMenu("Trade")   -- the player-list menu is not needed any more once the trade window is open
+            -- No player-list menu was opened: the request was sent directly by remote.
 
             -- 3) put the pets in
             setTrade(id, "selecting", true, "choosing pets")
@@ -12777,52 +12761,36 @@ local TradeAgent = (function()
             setTrade(id, "waiting", true, "waiting for a trade request from " .. t.partner)
             -- v19: the trade window is NOT forced visible any more: the game opens it by itself when the trade really starts
 
-            -- 1) accept the request, but only from that player
-            -- v20: accept with the game's own Respond request too (the button press needs getconnections and can silently do nothing)
-            local function respondAccept()
-                if tradeRequestRE then pcall(function() tradeRequestRE:FireServer({ Action = "Respond", Accepted = true }) end) end
+            -- 1) accept ONLY the expected sender's incoming TradeUpdate Request event.
+            -- Respond is sent directly through the same TradingService remote used by the game.
+            if not tradeRequestRE or not tradeUpdateRE then
+                return setTrade(id, "failed", false, "TradingService trade remotes not found")
             end
-            local reqConn
-            if tradeUpdateRE then
-                reqConn = tradeUpdateRE.OnClientEvent:Connect(function(d)
-                    if type(d) ~= "table" or d.Type ~= "Request" then return end
-                    local from = findPlayer(t.partner)
-                    if not from then return end
-                    if norm(d.FromName) ~= norm(from.Name) and d.FromUserId ~= from.UserId then return end
-                    task.delay(0.8, function()
-                        if abortRequested or buildOpen() then return end
-                        dbg("accepting the request from " .. tostring(d.FromName) .. " with Respond")
-                        respondAccept()
+            local expectedSender = findPlayer(t.partner)
+            if not expectedSender then
+                return setTrade(id, "failed", false, t.partner .. " is not in this server")
+            end
+            local requestSeen = false
+            local reqConn = tradeUpdateRE.OnClientEvent:Connect(function(d)
+                if type(d) ~= "table" or d.Type ~= "Request" then return end
+                -- UserId must match, so a different player's request cannot be accepted.
+                if tonumber(d.FromUserId) ~= expectedSender.UserId then return end
+                requestSeen = true
+                task.defer(function()
+                    if abortRequested or buildOpen() or not tradeBusy then return end
+                    dbg("accepting remote trade request from " .. t.partner)
+                    pcall(function()
+                        tradeRequestRE:FireServer({ Action = "Respond", Accepted = true })
                     end)
                 end)
-            end
-            local popupSeen = 0
+            end)
             local accepted = waitFor(function()
                 if abortRequested then return "abort" end
                 if buildOpen() then return "open" end
-                -- v9: the game keeps TradeQuest.Enabled = false while hatching, but it still fills in the text, so
-                -- we do NOT require Enabled. We match the sender's name, force the popup on, and press Accept.
-                local q = walk(pg(), { "Tabs", "TradeQuest" })
-                if q then
-                    local from = findPlayer(t.partner)
-                    local l = walk(q, { "Menu", "PlayerSent" })
-                    local txt = l and norm(l.Text) or ""
-                    if from and (txt:find(norm(from.Name), 1, true) or txt:find(norm(from.DisplayName), 1, true)) then
-                        local btn = walk(q, { "Menu", "Accept", "Button" })
-                        local fired = click(btn)
-                        if not fired and btn and type(firesignal) == "function" then
-                            pcall(function() firesignal(btn.MouseButton1Click) end)
-                            pcall(function() firesignal(btn.Activated) end)
-                        end
-                        dbg("pressed Accept on the trade request, fired =", tostring(fired))
-                        popupSeen = popupSeen + 1
-                        if not fired or popupSeen >= 2 then respondAccept() end   -- v20: the press did nothing (or the popup is still there): answer with the remote
-                        task.wait(1.5)
-                    end
-                end
                 return false
             end, 180)
-            if reqConn then reqConn:Disconnect() end
+            reqConn:Disconnect()
+            if requestSeen then dbg("expected sender's trade request was received") end
             if accepted == "abort" then cancelTrade() return setTrade(id, "failed", false, "stopped by the site") end
             if not accepted then return setTrade(id, "failed", false, "no request from " .. t.partner .. " in 3 minutes") end
 
