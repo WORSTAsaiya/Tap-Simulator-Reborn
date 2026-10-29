@@ -20,6 +20,16 @@
 --// 13. Renamed "Kaitun Enchant" to "Kaitun Stats" (old saved configs still load via ID_ALIAS).
 --// 14. Kaitun Hatch no longer touches your pets: Auto Equip (Luckiest while hatching, Richest right before each rebirth) and
 --//     Auto Rebirth moved from Kaitun Hatch to Kaitun Stats (Kaitun Stats still needs Kaitun Hatch to be running).
+--// 15. Added "Enchant V2" (Pets > Enchanting, under Auto Enchant) + "Enchant V2 Pets" dropdown (every Mythical+ pet in the game, multi select, no amounts).
+--//     Watches for Rainbow copies of the ticked pets (new hatches / finished crafts / ones you already own) and rolls them for the Target Enchants.
+--//     V2 has priority over Auto Enchant: the normal run finishes its current pet and then waits while V2 has work.
+--// 17. Trade (giver): when no card with the wanted pet name shows up in two full looks at the trade list, a third look is taken after a 4 s wait.
+--//     The "found only X of Y" message now also lists the pet names / tiers the list really held, the cards whose name could not be read and how many looks were taken.
+--// 16. Every dropdown now has a search box at the top of its menu (type letters, only options containing them stay; on a PC it is focused automatically).
+--//     Enchant V2 Pets got an "Auto (every Mythical+ Rainbow)" option that enchants any Rainbow pet of Mythical rarity or higher.
+--// 18. Trade (giver): the pets are now put into the offer with the game's own Offer request (pet ids from the pet data), the same way Auto Trade (Pay First) does,
+--//     instead of scrolling the trade window and clicking cards. The server's echo is checked (other copies are tried if it does not show the pets).
+--//     Only if that fails does the old card-clicking method run, so nothing gets worse (fix for "found only 0 of 5 ... list has 44 cards, 0 named ...").
 --// =====================================================================================================
 --// WORST Hub - Auto Hatch (Hatch tab) + Auto Craft (Pets tab)
 --// Execute as a normal script. Executing again closes the previous instance first.
@@ -4552,7 +4562,11 @@ local function buildLogic()
 			------------------------------------------------------------ helpers for the run
 			local cleaning = nil   -- run id that is still putting the pet back after the toggle was switched off
 			-- True while this enchant run is still the current one.
-			local function act(id) return alive and ((running and runId == id) or cleaning == id) end
+			local v2On, v2RunId, v2Busy, v2Want = false, nil, false, false   -- Enchant V2: toggle state, current run id (text), machine in use by V2, V2 has a pet waiting
+			local function act(id)
+				if type(id) == "string" then return alive and v2On and v2RunId == id end   -- Enchant V2 runs use text ids ("v2:1")
+				return alive and ((running and runId == id) or cleaning == id)
+			end
 			-- Waits `seconds` while the run is active.
 			local function nap(id, seconds)
 				local t0 = os.clock()
@@ -4677,7 +4691,7 @@ local function buildLogic()
 					if reason == "VisitEnchantMachine" then
 						goToMachine(id, true)
 					elseif reason == "AutoRunning" then
-						call("AutoStop")
+						if type(id) ~= "string" and not v2Busy then call("AutoStop") end   -- never stop a roll that Enchant V2 started (and V2 never stops a normal one)
 						nap(id, 1)
 					elseif reason == "ClaimFirst" then
 						claimPet(id)
@@ -4765,7 +4779,7 @@ local function buildLogic()
 					status("Reading your enchant state...")
 					local en = readState()
 					if not en then status("Couldn't read the enchant state - try again") return end
-					if en.Pending then resolvePending(en) end
+					if en.Pending and not v2Busy then resolvePending(en) end
 
 					local wanted = {}
 					liveWanted = wanted
@@ -4788,7 +4802,7 @@ local function buildLogic()
 						end
 					end
 
-					if lp:GetAttribute("EnchantHeldPet") ~= nil then claimPet() end
+					if lp:GetAttribute("EnchantHeldPet") ~= nil and not v2Busy then claimPet() end
 
 					status("Preparing Auto Enchant...")
 					local machine = goToMachine(id)
@@ -4812,6 +4826,12 @@ local function buildLogic()
 							nap(id, 1)
 							if not act(id) then return end
 						end
+						-- Enchant V2 has priority: finish nothing new here while V2 has a Rainbow pet waiting (the pet that was rolling is already collected)
+						while act(id) and v2On and v2Want do
+							status("Paused - Enchant V2 has priority")
+							nap(id, 0.5)
+						end
+						if not act(id) then return end
 						local petId, p, slot = nextPet(wanted)
 						if not petId then
 							if type(p) == "string" then
@@ -4886,8 +4906,10 @@ local function buildLogic()
 
 				-- cleanup (runs on finish, on error and when the toggle is switched off)
 				liveWanted = nil
-				if lp:GetAttribute("EnchantAutoPet") ~= nil then call("AutoStop") end
-				if lp:GetAttribute("EnchantHeldPet") ~= nil then call("Claim") end
+				if not v2Busy then   -- never touch a roll that Enchant V2 is running
+					if lp:GetAttribute("EnchantAutoPet") ~= nil then call("AutoStop") end
+					if lp:GetAttribute("EnchantHeldPet") ~= nil then call("Claim") end
+				end
 				task.wait(0.5)
 				-- still rolling / holding a pet and not at the circle (it rolled in the background): go back for it, queued like any other trip
 				if (lp:GetAttribute("EnchantAutoPet") ~= nil or lp:GetAttribute("EnchantHeldPet") ~= nil)
@@ -4898,7 +4920,7 @@ local function buildLogic()
 					if gotTrip then pcall(goToMachine, id, false) end
 					if lp:GetAttribute("EnchantAutoPet") ~= nil then call("AutoStop") end
 				end
-				if lp:GetAttribute("EnchantHeldPet") ~= nil then pcall(claimPet, id) end
+				if lp:GetAttribute("EnchantHeldPet") ~= nil and not v2Busy then pcall(claimPet, id) end
 				cleaning = nil
 				if gotTrip then releaseTrip("Enchant") end
 				if not okR then
@@ -4925,6 +4947,364 @@ local function buildLogic()
 				end
 			end
 
+			------------------------------------------------------------ ENCHANT V2
+			-- TOGGLE "Enchant V2" + dropdown "Enchant V2 Pets" (Pets > Enchanting, under Auto Enchant).
+			-- Watches your pets: any RAINBOW copy (the game's data calls it "Shiny") of a ticked pet that does not hold a Target Enchant yet
+			-- (new hatch, finished craft, or one you already own) is put on the game's auto roll until it gets one of the Target Enchants.
+			-- Uses the same Enchant Slot / Replace Rare / III settings as Auto Enchant. V2 has priority over Auto Enchant.
+			local v2Entry, v2PetEntry
+			do
+				local V2_CLEAR = "Clear all"
+				local V2_AUTO  = "Auto (every Mythical+ Rainbow)"   -- ticked = every Rainbow pet of Mythical rarity or higher, no need to tick pets one by one
+				local V2_RANK  = { mythic = 1, mythical = 1, godly = 2, secret = 3, secrets = 3, eternal = 4, divine = 5 }   -- Mythical and above only
+				local V2_TIER  = { Shiny = true, Rainbow = true }
+				local V2_DESC  = "Auto enchants the RAINBOW version of every ticked pet the moment it appears (hatched, crafted or already owned) with your Target Enchants. Tick \"Auto\" in the list to enchant every Mythical+ Rainbow pet. Takes priority over Auto Enchant. Uses the Enchant Slot and Replace Rare / III settings."
+				local v2Names, v2Used, v2Known = {}, {}, {}   -- label -> pet name / "petId:slot" tried / every Mythical+ pet name found          -- dropdown label -> pet name / "petId:slot" -> already tried
+				local v2HaveList = false
+				local filterCache, filterAt = nil, 0
+				local v2Self = false
+
+				-- "Secrets 2" -> "secrets", "Mythical" -> "mythical"
+				local function baseRarity(r)
+					local b = tostring(r):lower():gsub("%s+[ivx%d]+$", "")
+					return b
+				end
+
+				-- reads the game's pet / egg modules: returns pet name -> rarity text, for Mythical and above only
+				local function v2Scan()
+					local found, seen, nodes = {}, {}, 0
+					local function rarityText(def)
+						for _, k in ipairs({ "Rarity", "RarityName", "PetRarity" }) do
+							local v = def[k]
+							if type(v) == "string" and v ~= "" then return v end
+							if type(v) == "table" then
+								for _, nk in ipairs({ "Name", "Id", "ID" }) do
+									if type(v[nk]) == "string" then return v[nk] end
+								end
+							end
+						end
+						return nil
+					end
+					local function consider(name, def)
+						if type(name) ~= "string" or type(def) ~= "table" then return end
+						if Config and Config.Enchants and Config.Enchants[name] then return end   -- an enchant, not a pet
+						local r = rarityText(def)
+						if r and V2_RANK[baseRarity(r)] and not found[name] then found[name] = r end
+					end
+					local function go(t, d)
+						if seen[t] or nodes > 80000 then return end
+						seen[t] = true
+						nodes = nodes + 1
+						for k, v in pairs(t) do
+							if type(v) == "table" then
+								if type(k) == "string" then
+									consider(k, v)
+								else
+									consider(v.Name or v.PetName or v.Pet or v.Id or v.ID, v)
+								end
+								if d < 6 then go(v, d + 1) end
+							end
+						end
+					end
+					local root = RS:FindFirstChild("Shared") or RS
+					for _, m in ipairs(root:GetDescendants()) do
+						if m:IsA("ModuleScript") then
+							local n = m.Name:lower()
+							if n:find("egg", 1, true) or n:find("pet", 1, true) or n:find("rarit", 1, true) then
+								local okR, mod = pcall(require, m)
+								if okR and type(mod) == "table" then go(mod, 0) end
+							end
+						end
+					end
+					return found
+				end
+
+				v2PetEntry = {
+					type = "dropdown", name = "Enchant V2 Pets", icon = "🌈", width = 320,
+					multi = true, picked = {}, clearOption = V2_CLEAR, emptyText = "Select pets...",
+					desc = "Tick every Mythical-and-above pet (owned or not) whose Rainbow version Enchant V2 should enchant, or tick Auto for all of them. Several can be ticked, no amounts. Tip: open the list and type to search.",
+					options = { V2_CLEAR, V2_AUTO, "Loading pets..." }, default = V2_CLEAR,
+				}
+				v2Entry = {
+					type = "toggle", name = "Enchant V2", icon = "✨", default = false,
+					desc = V2_DESC,
+				}
+				-- Sets the status text of Enchant V2.
+				local function v2Say(text) setDesc(v2Entry, text) end
+
+				-- Fills the pet dropdown (Mythical and above, best rarity first).
+				local function v2Fill()
+					local found = v2Scan()
+					local list = {}
+					for name, r in pairs(found) do
+						list[#list + 1] = { name = name, r = r, rank = V2_RANK[baseRarity(r)] or 0 }
+					end
+					table.sort(list, function(a, b)
+						if a.rank ~= b.rank then return a.rank > b.rank end
+						if a.r ~= b.r then return a.r > b.r end
+						return a.name < b.name
+					end)
+					local opts = v2PetEntry.options
+					for i = #opts, 1, -1 do opts[i] = nil end
+					for k in pairs(v2Names) do v2Names[k] = nil end
+					for k in pairs(v2Known) do v2Known[k] = nil end
+					opts[1] = V2_CLEAR
+					opts[2] = V2_AUTO
+					if #list == 0 then
+						opts[3] = "No Mythical+ pets found - press Refresh Pets"
+					else
+						for _, e in ipairs(list) do
+							local label = string.format("%s (%s)", e.name, e.r)
+							opts[#opts + 1] = label
+							v2Names[label] = e.name
+							v2Known[e.name] = true
+						end
+					end
+					v2HaveList = #list > 0
+					if v2PetEntry._refresh then v2PetEntry._refresh() end
+					if v2PetEntry._refreshMulti then v2PetEntry._refreshMulti(true) end
+					return v2HaveList
+				end
+				pcall(v2Fill)   -- filled right away so saved picks can be restored when the configuration loads
+
+				do   -- "Refresh Pets" also refreshes the V2 list
+					local baseRun = refreshEntry.run
+					refreshEntry.run = function()
+						pcall(v2Fill)
+						if baseRun then baseRun() end
+					end
+				end
+				task.spawn(function()   -- nothing found yet (game data not ready): keep trying
+					task.wait(6)
+					while alive and not v2HaveList do
+						pcall(v2Fill)
+						local t0 = os.clock()
+						while alive and os.clock() - t0 < 30 do task.wait(1) end
+					end
+				end)
+
+				-- pet names ticked in the dropdown (+ true when "Auto" is ticked)
+				local function v2Selected()
+					local set, any = {}, false
+					local auto = v2PetEntry.picked[V2_AUTO] == true
+					for label, nm in pairs(v2Names) do
+						if v2PetEntry.picked[label] then set[nm] = true any = true end
+					end
+					return set, any or auto, auto
+				end
+				-- Auto mode: is this owned pet Mythical or above? (the scanned list, or the rarity the pet data itself carries)
+				local function v2IsMythicPlus(p)
+					if v2Known[p.Name] then return true end
+					return type(p.Rarity) == "string" and V2_RANK[baseRarity(p.Rarity)] ~= nil
+				end
+				-- Target Enchants ticked (best rank first)
+				local function v2Targets()
+					local names = {}
+					for _, o in ipairs(targetEntry.options) do
+						if o ~= ALLOPT and targetEntry.picked[o] then names[#names + 1] = o end
+					end
+					return names
+				end
+				-- the enchants that count as success: Target Enchants, or the game's own filters when none is ticked
+				local function v2Wanted(targets)
+					local wanted = {}
+					if #targets > 0 then
+						for _, n in ipairs(targets) do wanted[n] = true end
+						return wanted
+					end
+					if not filterCache or os.clock() - filterAt > 15 then
+						local en = readState()
+						local f = en and type(en.Filters) == "table" and en.Filters or {}
+						local fresh = {}
+						for k, v in pairs(f) do if v == true then fresh[k] = true end end
+						filterCache, filterAt = fresh, os.clock()
+					end
+					for k in pairs(filterCache) do wanted[k] = true end
+					return wanted
+				end
+
+				-- next Rainbow pet (and slot) of a ticked type that still needs a wanted enchant
+				local function v2Next(sel, wanted, slots, auto)
+					local owned = ownedPets()
+					if not owned then return nil end
+					local ids = {}
+					for pid, p in pairs(owned) do
+						if type(p) == "table" and type(p.Name) == "string" and V2_TIER[tostring(p.Tier)] and (sel[p.Name] or (auto and v2IsMythicPlus(p))) then
+							ids[#ids + 1] = pid
+						end
+					end
+					table.sort(ids, function(a, b) return tostring(a) < tostring(b) end)
+					for _, pid in ipairs(ids) do
+						local p = owned[pid]
+						for _, slot in ipairs(slots) do
+							local cur = slotValue(p, slot)
+							local slotOk = not v2Used[tostring(pid) .. ":" .. slot]
+							if slot == 2 and Config and Config.GetSlotCount and Config.GetSlotCount(p) < 2 then slotOk = false end
+							local has = type(cur) == "string"
+							if slotOk and not (has and wanted[cur]) then
+								if not (has and Config and Config.IsProtected(cur) and not replaceRare) then
+									return pid, p, slot
+								end
+							end
+						end
+					end
+					return nil
+				end
+
+				-- waits until the roll on the machine ends (Matched / Gems / stopped)
+				local function v2Wait(id, label, doneN)
+					local t0 = os.clock()
+					while act(id) do
+						if stopEvent then return stopEvent end
+						if os.clock() - t0 > 4 and lp:GetAttribute("EnchantAutoPet") == nil then
+							nap(id, 1)
+							return stopEvent or { Kind = "Stop", Reason = "Ended" }
+						end
+						v2Say(string.format("Rolling %s | %d roll(s) | enchanted %d | in background", label, rollCount, doneN))
+						task.wait(0.25)
+					end
+					return nil
+				end
+
+				local function v2Loop(id)
+					local doneN, failN, lastKey = 0, 0, ""
+					local okR, err = pcall(function()
+						v2Used = {}
+						v2Say("Enchant V2 on - watching for Rainbow pets...")
+						while act(id) do
+							local sel, anySel, autoSel = v2Selected()
+							local targets = v2Targets()
+							local key = table.concat(targets, "|")
+							if key ~= lastKey then lastKey = key v2Used = {} end   -- new targets: every pet may be tried again
+							if not anySel then
+								v2Want = false
+								v2Say("Tick the pets to watch (or Auto) in Enchant V2 Pets")
+								nap(id, 2)
+							else
+								local wanted = v2Wanted(targets)
+								if next(wanted) == nil then
+									v2Want = false
+									v2Say("Pick a Target Enchant (or tick results in the game's Filters panel)")
+									nap(id, 3)
+								else
+									local slots = bothSlots and { 1, 2 } or { selSlot }
+									local petId, p, slot = v2Next(sel, wanted, slots, autoSel)
+									if not petId then
+										v2Want = false
+										v2Say(string.format("Watching for %s | enchanted %d", autoSel and "any Mythical+ Rainbow pet" or "Rainbow pets", doneN))
+										nap(id, 1.5)
+									else
+										v2Want = true   -- Auto Enchant (normal) pauses after the pet it is rolling now
+										local machineBusy = lp:GetAttribute("EnchantAutoPet") ~= nil or lp:GetAttribute("EnchantHeldPet") ~= nil
+										if machineBusy then
+											if not running and lp:GetAttribute("EnchantAutoPet") == nil then claimPet(id) end   -- a pet was left in the enchanter
+											v2Say("Waiting for the current enchant to finish...")
+											nap(id, 0.5)
+										else
+											local label = tostring(p.Nickname or p.Name) .. " (Rainbow)"
+											if bothSlots or slot == 2 then label = label .. " slot " .. slot end
+											local okSet = true
+											if #targets > 0 then
+												local sres, sreason = call("SetFilters", targets)
+												if not sres then
+													okSet = false
+													v2Say("Couldn't set the targets: " .. why(sreason))
+													nap(id, 3)
+												end
+											end
+											if okSet then
+												local cur = slotValue(p, slot)
+												v2Busy = true
+												rollCount, stopEvent = 0, nil
+												v2Say("Starting auto roll on " .. label .. "...")
+												local outcome, reason = startAuto(id, petId, cur, slot)
+												if outcome == "gems" then
+													v2Busy = false
+													v2Say("Out of gems - trying again in 30s")
+													nap(id, 30)
+												elseif outcome == "stopped" then
+													v2Busy = false
+												elseif outcome == "skip" then
+													v2Busy = false
+													v2Used[tostring(petId) .. ":" .. slot] = true
+													if reason ~= "InvalidSlot" then failN = failN + 1 end
+													warn("[Enchant V2] skipped " .. label .. ": " .. why(reason))
+													if failN >= MAX_FAILS then v2Say("Stopped: the server keeps refusing (" .. why(reason) .. ")") return end
+												else
+													local ev = v2Wait(id, label, doneN)
+													if ev then
+														v2Used[tostring(petId) .. ":" .. slot] = true
+														claimPet(id)
+														v2Busy = false
+														local r = tostring(ev.Reason)
+														if r == "Matched" then
+															doneN = doneN + 1
+															failN = 0
+															v2Say(string.format("%s got %s (%d rolls) | enchanted %d", label, tostring(ev.Enchant), tonumber(ev.Rolls) or rollCount, doneN))
+															if WebhookBridge.enchant then
+																pcall(WebhookBridge.enchant, {
+																	name = p.Name, tier = p.Tier, slot = slot, bothSlots = bothSlots,
+																	enchant = tostring(ev.Enchant), rolls = tonumber(ev.Rolls) or rollCount,
+																})
+															end
+														elseif r == "Gems" then
+															v2Used[tostring(petId) .. ":" .. slot] = nil
+															v2Say("Out of gems - trying again in 30s")
+															nap(id, 30)
+														else
+															failN = failN + 1
+															v2Say(label .. ": " .. r)
+															warn("[Enchant V2] " .. label .. " stopped with reason " .. r)
+															if failN >= MAX_FAILS then v2Say("Stopped: too many unexpected stops (" .. r .. ")") return end
+														end
+														nap(id, 0.7)
+													end
+													-- ev == nil: toggled off mid roll, the clean-up below stops the roll and takes the pet back
+												end
+											end
+										end
+									end
+								end
+							end
+						end
+					end)
+					-- clean-up (finish, error or toggle off)
+					v2Want = false
+					if v2Busy then
+						if lp:GetAttribute("EnchantAutoPet") ~= nil then call("AutoStop") end
+						if lp:GetAttribute("EnchantHeldPet") ~= nil then call("Claim") end
+						task.wait(0.5)
+						if lp:GetAttribute("EnchantHeldPet") ~= nil then pcall(claimPet, nil) end
+						v2Busy = false
+					end
+					if not okR then
+						warn("[Enchant V2] error: " .. tostring(err))
+						v2Say("Error - see the output")
+					end
+					if v2RunId == id and v2On then
+						v2Self = true
+						if v2Entry._setUI then v2Entry._setUI(false) else v2On = false end
+						v2Self = false
+					else
+						v2Say(string.format("Off | enchanted %d", doneN))
+					end
+				end
+
+				local v2Count = 0
+				v2Entry.callback = function(on)
+					if on == v2On then return end
+					v2On = on
+					if on then
+						v2Count = v2Count + 1
+						v2RunId = "v2:" .. v2Count
+						task.spawn(v2Loop, v2RunId)
+					else
+						v2Want = false
+						if not v2Self then v2Say("Stopping...") end
+					end
+				end
+			end
+
 			-- fill the pet list once the game data is ready, then keep it up to date by itself
 			task.spawn(function()
 				task.wait(4)
@@ -4935,7 +5315,7 @@ local function buildLogic()
 				end
 			end)
 
-			return { refresh = refreshEntry, pet = petEntry, target = targetEntry, slot = slotEntry, replace = replaceEntry, auto = autoEntry }
+			return { refresh = refreshEntry, pet = petEntry, target = targetEntry, slot = slotEntry, replace = replaceEntry, auto = autoEntry, v2 = v2Entry, v2Pet = v2PetEntry }
 		end)
 		if not ok then
 			warn("[WORST Hub] Auto Enchant failed to load: " .. tostring(result))
@@ -11467,7 +11847,7 @@ local TradeAgent = (function()
         local function cardUsable(c) return cardBlock(c) == nil end
         local DG = { d = nil }   -- why a pick found nothing (shown in the failure message); one table = one local
         -- Clears the debug record of why a pick found nothing.
-        function DG.reset() DG.d = { seen = {}, named = {}, tiers = {}, match = {}, blocked = {}, marks = {}, cards = {}, log = {}, offer0 = nil, offerNow = nil, offerList = "", clicks = 0, noGrow = 0 } end
+        function DG.reset() DG.d = { seen = {}, named = {}, tiers = {}, match = {}, blocked = {}, marks = {}, cards = {}, log = {}, offer0 = nil, offerNow = nil, offerList = "", clicks = 0, noGrow = 0, names = {}, nm = {}, passes = 0 } end
         DG.reset()
         -- Builds the text that explains why a pick found nothing.
         function DG.text(rule)
@@ -11485,10 +11865,19 @@ local TradeAgent = (function()
             for _, v in pairs(d.cards or {}) do cl[#cl + 1] = v end
             table.sort(cl)
             while #cl > 3 do table.remove(cl) end
-            return string.format("list has %d cards, %d named %s (tiers seen: %s), %d match the tier, blocked: %s, matching cards: <%s>, offer at start %s, clicks %d (%s), no-add %d, offer now %s %s",
+            local main = string.format("list has %d cards, %d named %s (tiers seen: %s), %d match the tier, blocked: %s, matching cards: <%s>, offer at start %s, clicks %d (%s), no-add %d, offer now %s %s",
                 cnt(d.seen), cnt(d.named), tostring(rule.name or "?"), #tl > 0 and table.concat(tl, "/") or "none", cnt(d.match),
                 #bt > 0 and table.concat(bt, ", ") or "none", #cl > 0 and table.concat(cl, " | ") or "none", tostring(d.offer0),
                 d.clicks, table.concat(d.log or {}, " "), d.noGrow, tostring(d.offerNow), d.offerList or "")
+            -- what the list really held: every name/tier seen, cards whose name could not be read, how many looks were taken
+            local nl, nmCount = {}, 0
+            for k in pairs(d.names or {}) do nl[#nl + 1] = k end
+            for _ in pairs(d.nm or {}) do nmCount = nmCount + 1 end
+            table.sort(nl)
+            local totalNames = #nl
+            while #nl > 14 do table.remove(nl) end
+            return main .. string.format(" | looks %d, cards without a readable name %d, names seen (%d): %s%s", d.passes or 0, nmCount, totalNames,
+                #nl > 0 and table.concat(nl, ", ") or "none", totalNames > #nl and ", ..." or "")
         end
         -- Returns the list frame of the trade window.
         local function tradeList(b) return walk(b, { "Inventory", "List" }) end
@@ -11570,6 +11959,7 @@ local TradeAgent = (function()
                 do   -- diagnostics only
                     DG.d.seen[id] = true
                     local dn, dt = cardMeta(c)
+                    if dn then DG.d.names[tostring(dn) .. "(" .. tostring(dt) .. ")"] = true else DG.d.nm[id] = true end
                     if dn and rule.name and norm(dn) == norm(rule.name) then
                         DG.d.named[id] = true
                         DG.d.tiers[tostring(dt)] = true
@@ -11632,14 +12022,18 @@ local TradeAgent = (function()
             DG.reset()
             DG.d.offer0 = offerCount(b)
             for _, rule in ipairs(rules) do
-                local got, loops = 0, 0
+                local got, loops, nap3 = 0, 0, false
                 dbg("choosing", rule.count, "x", rule.tier or "", rule.name or "any pet")
                 -- pass 1 scans the whole list; if the rule is still not filled, pass 2 waits for the list to settle and scans it all again
                 -- (a pet that was just unequipped, or a card the list had not built yet, shows up on the second look)
-                for pass = 1, 2 do
+                for pass = 1, 3 do
                     if got >= rule.count then break end
-                    if pass == 2 then
-                        dbg("  not enough found - looking through the whole list a second time")
+                    -- look 3 only when NO card with this name was seen in looks 1 and 2: the list was probably still loading, so wait longer and look again
+                    if pass == 3 and next(DG.d.named) ~= nil then break end
+                    DG.d.passes = pass
+                    if pass >= 2 then
+                        dbg("  not enough found - looking through the whole list again (look " .. pass .. ")")
+                        if pass == 3 then nap3 = true task.wait(4) end
                         waitCardsStable(b)
                     end
                     scrollList(b, "top")
@@ -11895,6 +12289,75 @@ local TradeAgent = (function()
             end
         end
 
+        -- v12: DIRECT OFFER. Puts the pets into the trade with the game's own Offer request (pet ids from the pet data), exactly like
+        -- Auto Trade (Pay First) does, instead of scrolling the trade window and clicking cards. The server's echo of our offer is checked;
+        -- if it does not show the pets, other copies are tried (up to 3 tries). Returns true, or false + the reason (the caller then
+        -- falls back to the old card-clicking method).
+        local function directOffer(b, rules, total)
+            if not (tradeRequestRE and tradeUpdateRE) then return false, "trade remotes not found" end
+            local bad, rev, lastWhy = {}, 0, "?"
+            for try = 1, 3 do
+                local groups = DATA.tradePets(nil, bad)
+                if not groups then return false, "pet data not loaded" end
+                local refs, set, used = {}, {}, {}
+                for _, rule in ipairs(rules) do
+                    local need = rule.count
+                    for _, g in pairs(groups) do
+                        if need <= 0 then break end
+                        if ruleMatches(rule, g.name, g.tier) then
+                            for _, u in ipairs(g.uids) do
+                                if need <= 0 then break end
+                                if not used[u] then
+                                    used[u], set[u] = true, true
+                                    refs[#refs + 1] = { Uid = u, TypeName = "Pet", Amount = 1 }
+                                    need = need - 1
+                                end
+                            end
+                        end
+                    end
+                    if need > 0 then
+                        return false, "pet data has only " .. (rule.count - need) .. " of " .. rule.count .. " free " .. (rule.tier or "") .. " " .. (rule.name or "any pet") .. (try > 1 and " (after a retry)" or "")
+                    end
+                end
+                if #refs ~= total then return false, "picked " .. #refs .. " pets but expected " .. total end
+
+                -- is this Offer event (ours, echoed by the server) exactly the pets we sent?
+                local function isMine(d)
+                    local list = (type(d.Pets) == "table" and d.Pets) or (type(d.Refs) == "table" and d.Refs) or {}
+                    local n, seen = 0, {}
+                    for _, e in pairs(list) do
+                        if type(e) ~= "table" then return false end
+                        local id = tostring(e.Uid or e.Id or e.PetId)
+                        if not set[id] then return false end
+                        seen[id] = true
+                        n = n + 1
+                    end
+                    for u in pairs(set) do if not seen[u] then return false end end
+                    return n > 0
+                end
+
+                rev = rev + 1
+                local acked = false
+                local conn = tradeUpdateRE.OnClientEvent:Connect(function(d)
+                    if type(d) == "table" and d.Type == "Offer" and d.UserId == lp.UserId and isMine(d) then acked = true end
+                end)
+                pcall(function() tradeRequestRE:FireServer({ Revision = rev, Action = "Offer", Refs = refs }) end)
+                dbg("direct offer: sent", #refs, "pets, revision", rev, "try", try)
+                local t0 = os.clock()
+                while not acked and os.clock() - t0 < 6 and buildOpen() and not abortRequested do
+                    task.wait(0.2)
+                    if offerCount(b) == total then acked = true end   -- the window already shows them
+                end
+                conn:Disconnect()
+                if acked then return true end
+                if not buildOpen() then return false, "trade window closed" end
+                if abortRequested then return false, "stopped by the site" end
+                for u in pairs(set) do bad[u] = true end   -- the server did not take these: try other copies
+                lastWhy = "the server never showed the pets (try " .. try .. ")"
+            end
+            return false, lastWhy
+        end
+
         -- Runs a "give" trade command.
         local function runGive(cmd)
             local id = cmd.id
@@ -11959,8 +12422,19 @@ local TradeAgent = (function()
                 t.unqNote = (t.unqNote or "") .. ", 2nd: " .. tostring(nU2)
                 if okU2 and (tonumber(nU2) or 0) > 0 then task.wait(1.5) end
             end
-            waitCardsStable(b)
-            local ok, why = selectPets(b, t.rules)
+            local ok, why = true, nil
+            local dOk, dWhy = directOffer(b, t.rules, t.total)   -- v12: same way Auto Trade (Pay First) offers pets
+            if not dOk then
+                dbg("direct offer failed (" .. tostring(dWhy) .. "), falling back to clicking the cards")
+                t.unqNote = (t.unqNote and (t.unqNote .. ", ") or "") .. "direct offer: " .. tostring(dWhy)
+                if not buildOpen() then return setTrade(id, "failed", false, "the trade window closed while offering (" .. tostring(dWhy) .. ")") end
+                if offerCount(b) > 0 then   -- something may have landed: clicking on top of it could overfill the offer
+                    cancelTrade()
+                    return setTrade(id, "failed", false, "direct offer failed (" .. tostring(dWhy) .. ") and the offer is not empty, cancelled")
+                end
+                waitCardsStable(b)
+                ok, why = selectPets(b, t.rules)
+            end
             if not ok then cancelTrade() return setTrade(id, "failed", false, why .. (t.unqNote and (" {" .. t.unqNote .. "}") or "") .. ", cancelled") end
             if offerCount(b) ~= t.total then
                 cancelTrade()
@@ -12226,6 +12700,7 @@ local TradeAgent = (function()
                 if Logic[k] then ACT_SOURCES[#ACT_SOURCES + 1] = Logic[k] end
             end
             if Logic.enchant and Logic.enchant.auto then ACT_SOURCES[#ACT_SOURCES + 1] = Logic.enchant.auto end
+            if Logic.enchant and Logic.enchant.v2 then ACT_SOURCES[#ACT_SOURCES + 1] = Logic.enchant.v2 end
             if Logic.halloween then
                 ACT_SOURCES[#ACT_SOURCES + 1] = Logic.halloween.treat
                 ACT_SOURCES[#ACT_SOURCES + 1] = Logic.halloween.boss
@@ -13971,6 +14446,7 @@ local TAB_SCRIPTS = {
 				Logic.enchant.pet,
 				Logic.enchant.target, Logic.enchant.slot,
 				Logic.enchant.replace, Logic.enchant.auto,
+				Logic.enchant.v2, Logic.enchant.v2Pet,
 			}) or {
 				{
 					type = "button", name = "Auto Enchant unavailable", icon = "…", noSave = true,
@@ -15447,6 +15923,8 @@ local function buildDropdown(row, entry)
 	local current = entry.default or options[1] or "—"
 	local W, H = entry.width or 220, 42
 	local itemH = 38
+	local SEARCH_H = 36        -- height of the search strip at the top of every open menu
+	local searchText = ""     -- what is typed in the search box ("" = show every option)
 	local isOpen = false
 	local ui = nil                                -- { menu = ScrollingFrame } while open
 	local lastSig = table.concat(options, "\n")
@@ -15574,7 +16052,7 @@ local function buildDropdown(row, entry)
 	local function menuLayout()
 		local scale = uiScale.Scale
 		local rel = (btn.AbsolutePosition - window.AbsolutePosition) / scale
-		local h = math.min(#options * itemH + 8, 300)
+		local h = math.min(#options * itemH + 8, 300) + SEARCH_H
 		if rel.Y + H + 4 + h <= window.Size.Y.Offset - 10 then
 			return Vector2.new(rel.X, rel.Y + H + 4), 0, h
 		end
@@ -15612,7 +16090,7 @@ local function buildDropdown(row, entry)
 	end
 
 	-- Builds one "+ name -" row of a counter dropdown.
-	local function stepRow(menu, opt, i, animate, step)
+	local function stepRow(menu, opt, i, animate, step, di)
 		local n, lim = getN(opt), limitOf(opt)
 		local on = n > 0
 		local o = new("TextButton", {
@@ -15668,7 +16146,7 @@ local function buildDropdown(row, entry)
 		}, o)
 
 		if animate then
-			task.delay((i - 1) * (step or 0.03), function()
+			task.delay(math.min(((di or i) - 1) * (step or 0.03), 0.45), function()
 				if not o.Parent then return end
 				tweenX(o, { BackgroundTransparency = 0 }, 0.2)
 				tweenX(fill, { BackgroundTransparency = 0 }, 0.2)
@@ -15694,9 +16172,13 @@ local function buildDropdown(row, entry)
 	-- (re)builds the option buttons inside the menu; animate = fade + slide in one after the other
 	local function addItems(menu, animate, step)
 		for _, c in ipairs(menu:GetChildren()) do
-			if c:IsA("GuiButton") then c:Destroy() end
+			if c:IsA("GuiButton") or c.Name == "NoResults" then c:Destroy() end
 		end
+		local needle = searchText:lower()
+		local shown = 0
 		for i, opt in ipairs(options) do
+			local visible = needle == "" or tostring(opt):lower():find(needle, 1, true) ~= nil   -- plain, case-insensitive "contains"
+			if visible then shown = shown + 1 end
 			local selected
 			if multi then
 				if opt == clearOpt then
@@ -15707,8 +16189,10 @@ local function buildDropdown(row, entry)
 			else
 				selected = (opt == current)
 			end
-			if multi and opt ~= clearOpt then
-				stepRow(menu, opt, i, animate, step)
+			if not visible then
+				-- hidden by the search
+			elseif multi and opt ~= clearOpt then
+				stepRow(menu, opt, i, animate, step, shown)
 			else
 			local o = new("TextButton", {
 				Name = "Option", LayoutOrder = i, Size = UDim2.new(1, 0, 0, itemH - 2), ZIndex = 51,
@@ -15740,7 +16224,7 @@ local function buildDropdown(row, entry)
 				}, o)
 			end
 			if animate then
-				task.delay((i - 1) * (step or 0.03), function()
+				task.delay(math.min((shown - 1) * (step or 0.03), 0.45), function()
 					if not o.Parent then return end
 					tweenX(o, { BackgroundTransparency = 0 }, 0.2)
 					tweenX(lbl, { TextTransparency = 0, Position = UDim2.fromOffset(14, 0) }, 0.3,
@@ -15773,6 +16257,12 @@ local function buildDropdown(row, entry)
 				choose(opt, true)
 			end)
 			end
+		end
+		if shown == 0 and needle ~= "" then
+			new("TextLabel", {
+				Name = "NoResults", LayoutOrder = 1, Size = UDim2.new(1, 0, 0, itemH - 2), ZIndex = 52, BackgroundTransparency = 1,
+				Text = "No results", TextSize = 15, Font = Enum.Font.Gotham, TextColor3 = C.sub,
+			}, menu)
 		end
 	end
 
@@ -15811,10 +16301,39 @@ local function buildDropdown(row, entry)
 		}, window)
 		corner(menu, UDim.new(0, 10))
 		local mStroke = stroke(menu, C.stroke, 1, 1)
-		new("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4),
+		new("UIPadding", { PaddingTop = UDim.new(0, 4 + SEARCH_H), PaddingBottom = UDim.new(0, 4),
 			PaddingLeft = UDim.new(0, 4), PaddingRight = UDim.new(0, 4) }, menu)
 		new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }, menu)
 		ui = { menu = menu }
+
+		-- search box: stays at the top of the menu (the menu grows / scrolls underneath it). Type to show only the options whose name contains the letters.
+		searchText = ""
+		local box = new("TextBox", {
+			Name = "Search", Size = UDim2.fromOffset(W - 8, SEARCH_H - 6), BackgroundColor3 = FIELD, BorderSizePixel = 0, ZIndex = 60,
+			Text = "", PlaceholderText = "Search...", PlaceholderColor3 = C.sub, TextColor3 = C.text, ClearTextOnFocus = false,
+			TextSize = 15, Font = Enum.Font.Gotham, TextXAlignment = Enum.TextXAlignment.Left, Visible = false,
+		}, window)
+		corner(box, UDim.new(0, 8))
+		new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }, box)
+		local follow
+		follow = game:GetService("RunService").RenderStepped:Connect(function()   -- keeps the box on the top edge while the menu animates
+			if not menu.Parent or not box.Parent then follow:Disconnect() return end
+			local sc = uiScale.Scale
+			local rel = (menu.AbsolutePosition - window.AbsolutePosition) / sc
+			box.Position = UDim2.fromOffset(rel.X + 4, rel.Y + 4)
+			box.Visible = menu.AbsoluteSize.Y / sc > SEARCH_H + 6 and menu.BackgroundTransparency < 0.9
+		end)
+		box:GetPropertyChangedSignal("Text"):Connect(function()
+			if box.Text == searchText then return end
+			searchText = box.Text
+			if menu.Parent then
+				addItems(menu, false)
+				menu.CanvasPosition = Vector2.zero
+			end
+		end)
+		task.delay(0.15, function()   -- on a PC you can just start typing; on touch the keyboard only opens when you tap the box
+			if box.Parent and UserInputService.KeyboardEnabled then pcall(function() box:CaptureFocus() end) end
+		end)
 
 		addItems(menu, true, 0.03)
 
@@ -15832,6 +16351,10 @@ local function buildDropdown(row, entry)
 			isOpen = false
 			ui = nil
 			catcher:Destroy()
+			if follow then follow:Disconnect() end
+			pcall(function() box:ReleaseFocus() end)
+			box:Destroy()
+			searchText = ""
 
 			tweenX(chev, { Rotation = 0 }, 0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 			tweenX(btn, { BackgroundColor3 = FIELD }, 0.2)
@@ -18349,6 +18872,7 @@ do
 			if Logic[k] then table.insert(sources, Logic[k]) end
 		end
 		if Logic.enchant and Logic.enchant.auto then table.insert(sources, Logic.enchant.auto) end   -- Auto Enchant
+		if Logic.enchant and Logic.enchant.v2 then table.insert(sources, Logic.enchant.v2) end   -- Enchant V2
 		if Logic.halloween then
 			table.insert(sources, Logic.halloween.treat)
 			table.insert(sources, Logic.halloween.boss)
@@ -19101,6 +19625,7 @@ do
 		local list = {}
 		for _, k in ipairs({ "hatch", "craft", "dCraft", "rCraft", "collect", "scan" }) do list[#list + 1] = Logic[k] end
 		if Logic.enchant and Logic.enchant.auto then list[#list + 1] = Logic.enchant.auto end
+		if Logic.enchant and Logic.enchant.v2 then list[#list + 1] = Logic.enchant.v2 end
 		if Logic.halloween then list[#list + 1] = Logic.halloween.treat list[#list + 1] = Logic.halloween.boss list[#list + 1] = Logic.halloween.shop end
 		if Logic.dig then list[#list + 1] = Logic.dig.toggle end
 		if Logic.balloon then list[#list + 1] = Logic.balloon.toggle end
