@@ -11188,6 +11188,7 @@ local TradeAgent = (function()
         --   * up to 4 attempts, each with a different way of pressing the button: connections -> firesignal -> real mouse click (VirtualInputManager)
         --   * the menu state is re-checked right before every press, so a late opening is never "toggled shut" by the next press
         --   * the button is looked up again on every attempt (the game rebuilds its HUD after hatching / teleports)
+        local OPEN_MENU_WHY = nil
         local function openMenu(name, btnPath)
             local function gui() return walk(pg(), { "Tabs", name }) end
             local function on() local g = gui() return g ~= nil and g.Enabled == true end
@@ -11250,6 +11251,26 @@ local TradeAgent = (function()
                 end
             end
 
+            do   -- v23: remember WHY it failed so the site shows it
+                local btn = walk(pg(), btnPath)
+                local why = {}
+                if not walk(pg(), { "Game" }) then why[#why + 1] = "no Game gui"
+                elseif not btn then why[#why + 1] = "Trade button missing at " .. table.concat(btnPath, ">")
+                else
+                    local par = btn
+                    while par and par ~= pg() do
+                        if par:IsA("GuiObject") and not par.Visible then why[#why + 1] = par.Name .. " hidden" break end
+                        if par:IsA("ScreenGui") and not par.Enabled then why[#why + 1] = par.Name .. " disabled" break end
+                        par = par.Parent
+                    end
+                end
+                if not gui() then why[#why + 1] = "Tabs." .. name .. " does not exist (trade locked on this account?)" end
+                local tabs = walk(pg(), { "Tabs" })
+                local openOnes = {}
+                if tabs then for _, g in ipairs(tabs:GetChildren()) do if g:IsA("ScreenGui") and g.Enabled then openOnes[#openOnes + 1] = g.Name end end end
+                if #openOnes > 0 then why[#why + 1] = "open menus: " .. table.concat(openOnes, ",") end
+                OPEN_MENU_WHY = #why > 0 and table.concat(why, "; ") or "button pressed 4x, menu stayed closed"
+            end
             dbg(name .. " still closed, forcing it open")
             forceOn(gui(), name)
             forceOn(walk(gui(), { "Menu" }), name .. " menu")
@@ -12663,7 +12684,7 @@ local TradeAgent = (function()
 
             -- 1) open the Trade menu (also while hatching) and send the request
             if not openMenu("Trade", { "Game", "LeftButtons", "Trade", "Button" }) then
-                return setTrade(id, "failed", false, "trade menu did not open")
+                return setTrade(id, "failed", false, "trade menu did not open (" .. tostring(OPEN_MENU_WHY) .. ")")
             end
             local row = waitFor(function()
                 return walk(pg(), { "Tabs", "Trade", "Menu", "Inner", "Trade", "Player_" .. target.UserId })
