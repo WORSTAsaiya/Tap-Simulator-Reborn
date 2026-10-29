@@ -30,6 +30,8 @@
 --// 18. Trade (giver): the pets are now put into the offer with the game's own Offer request (pet ids from the pet data), the same way Auto Trade (Pay First) does,
 --//     instead of scrolling the trade window and clicking cards. The server's echo is checked (other copies are tried if it does not show the pets).
 --//     Only if that fails does the old card-clicking method run, so nothing gets worse (fix for "found only 0 of 5 ... list has 44 cards, 0 named ...").
+--// 19. Trade (giver + receiver): the trade window is no longer forced visible (startWindowForce is not called any more). The script now waits for the
+--//     game to open it by itself, so an empty window shown before the trade really starts is never mistaken for the trade.
 --// =====================================================================================================
 --// WORST Hub - Auto Hatch (Hatch tab) + Auto Craft (Pets tab)
 --// Execute as a normal script. Executing again closes the previous instance first.
@@ -12396,7 +12398,7 @@ local TradeAgent = (function()
                 return setTrade(id, "failed", false, "could not press Trade")
             end
             setTrade(id, "requested", true, "request sent to " .. t.partner .. ", waiting for them to accept")
-            startWindowForce(target, 120)
+            -- v19: the trade window is NOT forced visible any more: the game opens it by itself when the trade really starts
 
             -- 2) wait for the trade window
             local opened = waitFor(function() return buildOpen() or abortRequested end, 90)
@@ -12463,7 +12465,7 @@ local TradeAgent = (function()
             if not partnerAllowed(t.partner) then return setTrade(id, "failed", false, t.partner .. " is not in ALLOWED_PARTNERS") end
             if t.expect < 1 or t.expect > MAX_OFFER then return setTrade(id, "failed", false, "bad expected pet count") end
             setTrade(id, "waiting", true, "waiting for a trade request from " .. t.partner)
-            startWindowForce(findPlayer(t.partner), 200)
+            -- v19: the trade window is NOT forced visible any more: the game opens it by itself when the trade really starts
 
             -- 1) accept the request, but only from that player
             local accepted = waitFor(function()
