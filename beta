@@ -11182,19 +11182,74 @@ local TradeAgent = (function()
             return false
         end
 
-        -- opens Tabs.<name> even while hatching: click, wait for the game to build it, click again, then force it
+        -- opens Tabs.<name> even while hatching. v22: much more robust than before (this was the cause of "trade menu did not open"):
+        --   * other open menus (Inventory, Shop, ...) are closed first, because the game only shows one menu at a time and pressing the
+        --     Trade button while another one is open can just swap/close instead of opening
+        --   * up to 4 attempts, each with a different way of pressing the button: connections -> firesignal -> real mouse click (VirtualInputManager)
+        --   * the menu state is re-checked right before every press, so a late opening is never "toggled shut" by the next press
+        --   * the button is looked up again on every attempt (the game rebuilds its HUD after hatching / teleports)
         local function openMenu(name, btnPath)
-            -- Returns the menu's ScreenGui.
             local function gui() return walk(pg(), { "Tabs", name }) end
-            -- True if the menu is open.
             local function on() local g = gui() return g ~= nil and g.Enabled == true end
             if on() then return true end
-            click(walk(pg(), btnPath))
-            waitFor(gui, 5)
-            if waitFor(on, 2) then return true end
-            dbg("second click on " .. name .. " (the first one did not show it)")
-            click(walk(pg(), btnPath))
-            if waitFor(on, 3) then return true end
+
+            -- close every other menu that is open
+            local function closeOthers()
+                local tabs = walk(pg(), { "Tabs" })
+                if not tabs then return end
+                for _, g in ipairs(tabs:GetChildren()) do
+                    if g.Name ~= name and g:IsA("ScreenGui") and g.Enabled == true then
+                        local cb = walk(g, { "Menu", "Close", "Button" })
+                        if cb then
+                            click(cb)
+                            dbg("closed the open menu " .. g.Name .. " before opening " .. name)
+                        end
+                    end
+                end
+                task.wait(0.6)
+            end
+
+            -- real mouse click in the middle of the button
+            local function mouseClick(btn)
+                if not btn then return false end
+                local ok = pcall(function()
+                    local vim = game:GetService("VirtualInputManager")
+                    local inset = game:GetService("GuiService"):GetGuiInset()
+                    local p, sz = btn.AbsolutePosition, btn.AbsoluteSize
+                    local x, y = p.X + sz.X / 2, p.Y + sz.Y / 2 + inset.Y
+                    vim:SendMouseMoveEvent(x, y, game)
+                    vim:SendMouseButtonEvent(x, y, 0, true, game, 0)
+                    task.wait(0.08)
+                    vim:SendMouseButtonEvent(x, y, 0, false, game, 0)
+                end)
+                return ok
+            end
+
+            local function fireSig(btn)
+                if not btn or type(firesignal) ~= "function" then return false end
+                for _, sig in ipairs({ "MouseButton1Down", "MouseButton1Up", "MouseButton1Click", "Activated" }) do
+                    pcall(firesignal, btn[sig])
+                end
+                return true
+            end
+
+            for attempt = 1, 4 do
+                if on() then return true end
+                if attempt == 1 or attempt == 3 then closeOthers() end
+                if on() then return true end
+                local btn = waitFor(function() return walk(pg(), btnPath) end, 4)
+                if not btn then
+                    dbg(name .. " button not found (attempt " .. attempt .. "), waiting")
+                    task.wait(1.5)
+                else
+                    if attempt == 1 or attempt == 4 then click(btn)
+                    elseif attempt == 2 then fireSig(btn)
+                    else mouseClick(btn) end
+                    if waitFor(on, 3.5) then return true end   -- long enough for a slow client, so the next press never closes a late opener
+                    dbg(name .. " did not open on attempt " .. attempt .. " of 4")
+                end
+            end
+
             dbg(name .. " still closed, forcing it open")
             forceOn(gui(), name)
             forceOn(walk(gui(), { "Menu" }), name .. " menu")
