@@ -15,8 +15,11 @@
 --//    scrolls half a window at a time, waits at the "bottom" before giving up, and scans the whole list a second time
 --//    before reporting "found only X of Y" (fix for Diamond cards not being found).
 --// 10. Added Golden/Diamond pet-per-craft selectors using the existing MachineService requests.
---// 11. Kaitun Enchant now assigns distinct pets to Four-Leaf x2, Secret Hunter x2, and Lucky III for extras.
---// 12. Kaitun Enchant prioritizes Luck/Gems affinity, Legendary+ rarity and preserves a matching slot.
+--// 11. Kaitun Stats now assigns distinct pets to Four-Leaf x2, Secret Hunter x2, and Lucky III for extras.
+--// 12. Kaitun Stats prioritizes Luck/Gems affinity, Legendary+ rarity and preserves a matching slot.
+--// 13. Renamed "Kaitun Enchant" to "Kaitun Stats" (old saved configs still load via ID_ALIAS).
+--// 14. Kaitun Hatch no longer touches your pets: Auto Equip (Luckiest while hatching, Richest right before each rebirth) and
+--//     Auto Rebirth moved from Kaitun Hatch to Kaitun Stats (Kaitun Stats still needs Kaitun Hatch to be running).
 --// =====================================================================================================
 --// WORST Hub - Auto Hatch (Hatch tab) + Auto Craft (Pets tab)
 --// Execute as a normal script. Executing again closes the previous instance first.
@@ -34,7 +37,7 @@
 --//                  [Placeholder] empty page for later
 --// Kaitun tab   : two toggles only. "Kaitun Hatch" = MASTER toggle: switches every other feature toggle off and runs auto delete Common-Legendary, auto hatch the latest detected egg,
 --//                  auto craft (Golden at the "Craft When Storage Is" slider, which shows up under it while it is on, + Diamond/Rainbow) + collect, Anti AFK, Auto Rejoin, Show Status (Priority tab order),
---//                  plus Auto Rebirth (Best) and Auto Equip (Luckiest while hatching, Richest right before each rebirth).
+--//                  Kaitun Hatch does NOT touch your pets: Auto Rebirth (Best) and Auto Equip (Luckiest while hatching, Richest right before each rebirth) are run by "Kaitun Stats" (needs Kaitun Hatch), together with the enchanting.
 --//                  "Kaitun Events" = switches Auto Chest Coins, Auto Trick or Treat, Auto Kill Hallow Boss and Auto Purchase Items (shop checked once an hour, Buy All)
 --//                  on by itself and shows live numbers. The window and the tabs never change.
 --// Events tab   : page [General] -> "Auto Claim Lucky Ducky"; page [Halloween] -> "Auto Halloween Trick or Treat" (travels to the Halloween island, jumps in each house's circle, waits for the houses to refill, repeats); one lap per 4-hour refill with a countdown; "Auto Kill Boss" (Hallow Lord) and "Auto Purchase Items" (+ Items to Buy dropdown)
@@ -43,7 +46,7 @@
 --// Trade tab    : "Choose Pets" dropdown ("+  pet  -" rows: left click = +1, right click = -1, + / - buttons for touch) + "Tokens They Must Pay" + "Auto Trade (Pay First)" -> accepts requests, offers exactly those pets and only Locks / Confirms once the other player's offer reaches the amount
 --// Priority tab : Double Jump first; Craft, Auto Balloons, Auto Trick or Treat, Auto Kill Hallow Lord, Auto Dig and Hatch (saved in WORST/priority.txt)
 --// LITE MODE   : (automatic switching is OFF: AUTO_LITE = false near the end of the file. The Mini Ui only opens from Settings > Mini Ui.) Old behaviour: if nothing was toggled by hand since execute and the hub is left alone for 60 s, an "Are you afk?" popup shows; ignore it for another 60 s and the
---//                  main window closes and a small window (Kaitun Hatch + Kaitun Enchant switched on; Kaitun Events is yours to switch on) opens. Times: IDLE_SECS / AFK_SECS near the end of the file.
+--//                  main window closes and a small window (Kaitun Hatch + Kaitun Stats switched on; Kaitun Events is yours to switch on) opens. Times: IDLE_SECS / AFK_SECS near the end of the file.
 --// Settings tab : two pages (General / Ui). Ui = Animated Background, Minimize Keybind, Auto Save Configuration, Show Status, Auto Rejoin, Anti AFK, Save Configuration, Configuration List,
 --//                  FPS Cap; General = everything else. "Reset Script" is a button at the top right of the tab.
 --//                  "Minimize Keybind" -> click it, press any key, that key now minimizes / restores the hub (default Left Ctrl)
@@ -2074,7 +2077,7 @@ local function buildLogic()
 			hSetStatus((HG.hold or HG.kwHold) and "Waiting for Auto Delete to finish before hatching..." or ("Paused - " .. tostring(who or "a feature with a higher priority") .. " is working"))
 		end
 	end
-	-- Kaitun Enchant only works while this is true: Auto Hatch is really running (not paused by Craft / events / Auto Delete) and you are at the egg
+	-- Kaitun Stats only works while this is true: Auto Hatch is really running (not paused by Craft / events / Auto Delete) and you are at the egg
 	HG.isHatching = function() return alive and hEnabled == true and hReady == true end
 	-- restarts the hatch run (off, short wait, then HG.sync decides whether it may run again)
 	HA.restart = function()
@@ -6244,7 +6247,7 @@ local function buildLogic()
 		local mainEntry = {
 			-- TOGGLE "Kaitun Hatch": MASTER toggle: switches every other feature off and runs your setup (Priority tab order) - auto delete, hatch the latest detected egg, craft + coll...
 			type = "toggle", name = "Kaitun Hatch", icon = "⚡", default = false,   -- saved: with Auto Save on, loading the config switches Kaitun back on (and ONLY Kaitun: every other toggle stays off)
-			desc = "MASTER toggle: switches every other feature off and runs your setup (Priority tab order) - auto delete, hatch the latest detected egg, craft + collect, Auto Rebirth + Auto Equip, Anti AFK, Auto Rejoin, Show Status.",
+			desc = "MASTER toggle: switches every other feature off and runs your setup (Priority tab order) - auto delete, hatch the latest detected egg, craft + collect, Anti AFK, Auto Rejoin, Show Status. (Pets, Auto Equip and Auto Rebirth are handled by Kaitun Stats.)",
 		}
 		local secondEntry = {
 			-- TOGGLE "Kaitun Events": Starts Auto Chest Coins, Auto Trick or Treat, Auto Kill Hallow Boss and Auto Purchase Items by itself and shows live numbers here (works with Kaitu...
@@ -6252,9 +6255,9 @@ local function buildLogic()
 			desc = "Starts Auto Chest Coins, Auto Trick or Treat, Auto Kill Hallow Boss and Auto Purchase Items by itself and shows live numbers here (works with Kaitun Hatch on or off).",
 		}
 		local enchantEntry = {
-			-- TOGGLE "Kaitun Enchant": needs Kaitun Hatch; while hatching it enchants your equipped pets with the wanted enchants (Secret Hunter, Four Leaf, Lucky 3).
-			type = "toggle", name = "Kaitun Enchant", icon = "🔮", default = false,
-			desc = "Needs Kaitun Hatch. Luck-affinity Legendary+ equipped pets: two Four-Leaf, two Secret Hunter, and Lucky III on extras (one matching slot per pet). Rebirth pets prioritize Gems affinity and Renewal III.",
+			-- TOGGLE "Kaitun Stats": needs Kaitun Hatch; runs Auto Equip + Auto Rebirth and, while hatching, enchants your equipped pets with the wanted enchants (Secret Hunter, Four Leaf, Lucky 3).
+			type = "toggle", name = "Kaitun Stats", icon = "🔮", default = false,
+			desc = "Needs Kaitun Hatch. Runs Auto Equip (Luckiest while hatching, Richest right before each rebirth) and Auto Rebirth (Best). Enchants Luck-affinity Legendary+ equipped pets: two Four-Leaf, two Secret Hunter, and Lucky III on extras (one matching slot per pet). Rebirth pets prioritize Gems affinity and Renewal III.",
 		}
 		local turnedOn = {}   -- entries Kaitun switched on (only those are switched off again)
 		local kaitunOn = false
@@ -12337,6 +12340,7 @@ local TradeAgent = (function()
             local INV_ROWS    = 15      -- how many pet rows to list (rarest first)
             local INV_COLOR   = 5793266 -- embed color (decimal)
             local INV_NAME    = "WORST • Inventory"
+            local INV_AVATAR  = "https://static.vecteezy.com/system/resources/previews/004/891/075/non_2x/the-initials-w-logo-is-simple-and-modern8868-free-vector.jpg"   -- webhook profile picture
 
             local base = (tostring(INV_WEBHOOK):gsub("%?.*$", ""):gsub("/+$", ""))
             local urlOk = base:find("discord.com/api/webhooks/", 1, true) ~= nil or base:find("discordapp.com/api/webhooks/", 1, true) ~= nil
@@ -12398,6 +12402,7 @@ local TradeAgent = (function()
                         else return false end
                     end
                     payload.username = INV_NAME
+                    payload.avatar_url = INV_AVATAR
                     local code, body = call("POST", base .. "?wait=true", payload)
                     if code == 200 then
                         local ok, d = pcall(function() return HttpService:JSONDecode(body) end)
@@ -14098,7 +14103,7 @@ local TAB_SCRIPTS = {
 		},
 		{
 			type = "button", name = "Mini Ui", icon = "📱", noSave = true,
-			desc = "Shrinks the hub away and opens the small Mini Ui (Kaitun Hatch + Kaitun Enchant switch on; Kaitun Events only if you switch it on). 3D rendering is switched off while it is open (black screen with your username, what it is doing, hatches, rarest pet, ping and FPS in the middle); its [-] button hides the toggles. Use its Full UI button, or the minimize key, to come back.",
+			desc = "Shrinks the hub away and opens the small Mini Ui (Kaitun Hatch + Kaitun Stats switch on; Kaitun Events only if you switch it on). 3D rendering is switched off while it is open (black screen with your username, what it is doing, hatches, rarest pet, ping and FPS in the middle); its [-] button hides the toggles. Use its Full UI button, or the minimize key, to come back.",
 			run = function()
 				local f = record.miniUi
 				if not f then return false, "Mini Ui isn't available (the Kaitun controls were not found)" end
@@ -14166,7 +14171,7 @@ end
 ---------------------------------------------------------------- KAITUN HATCH + KAITUN STATS
 -- Kaitun Hatch (master): switches every other feature toggle off, then runs delete / hatch latest detected egg / craft + collect / Anti AFK / Auto Rejoin /
 --   Show Status itself, in the order of the Priority tab.
--- Kaitun Hatch also runs Auto Rebirth + Auto Equip. Kaitun Events: switches Auto Chest Coins, Auto Trick or Treat, Auto Kill Hallow Boss and Auto Purchase Items
+-- Kaitun Stats (needs Kaitun Hatch) runs Auto Rebirth + Auto Equip and the enchanting; Kaitun Hatch itself no longer touches your pets. Kaitun Events: switches Auto Chest Coins, Auto Trick or Treat, Auto Kill Hallow Boss and Auto Purchase Items
 --   on BY ITSELF and shows live numbers. It works with Kaitun Hatch on or off. Settings / Webhook toggles are not touched.
 do
 	local K = Logic and Logic.kaitun
@@ -14175,6 +14180,7 @@ do
 		local mainEntry, statsEntry = K.main, K.second
 		local ovr = Config.override
 		local kOn = false          -- Kaitun Hatch
+		local stOn = false         -- Kaitun Stats
 		local statsOn = false      -- Kaitun Events
 		local hw = Logic.halloween
 
@@ -14243,7 +14249,7 @@ do
 			end
 		end
 
-		---------------------------------------------------------------- Auto Rebirth (run by Kaitun Hatch)
+		---------------------------------------------------------------- Auto Rebirth (run by Kaitun Stats)
 		local function rebirthApply(on)
 			local tog, amt, dly = AutoRebirth[1], AutoRebirth[2], AutoRebirth[3]
 			if on then
@@ -14314,7 +14320,7 @@ do
 			}
 		end
 
-		---------------------------------------------------------------- Auto Equip (run by Kaitun Hatch): Luckiest while hatching, Richest right before the rebirth
+		---------------------------------------------------------------- Auto Equip (run by Kaitun Stats): Luckiest while hatching, Richest right before the rebirth
 		local eq = { run = 0, swapping = false, got = nil, lastSwap = -1e9 }
 		local EQUIP_REFRESH = 300   -- seconds between two "equip Luckiest" refreshes (was 30: the pets kept re-summoning)
 		local SWAP_MIN      = 60    -- at most one Richest <-> Luckiest swap per this many seconds (rebirth tries run every few seconds)
@@ -14359,14 +14365,14 @@ do
 			if not on then note("equip", nil) return end
 			local my = eq.run
 			task.spawn(function()
-				while alive and kOn and eq.run == my do
+				while alive and kOn and stOn and eq.run == my do
 					if not eq.swapping then
 						local ok, why = equipMode("Luck", 3)
 						note("equip", (not ok) and ("[Debug] Equip Luckiest failed: " .. tostring(why)) or nil)
 						if ok then task.wait(0.5) pcall(SecretGuard.sweep) end   -- secret pets never stay equipped
 					end
 					local t0, lastCheck = os.clock(), os.clock()
-					while alive and kOn and eq.run == my and os.clock() - t0 < EQUIP_REFRESH do
+					while alive and kOn and stOn and eq.run == my and os.clock() - t0 < EQUIP_REFRESH do
 						task.wait(0.25)
 						if not eq.swapping and os.clock() - lastCheck >= 10 then   -- secret pets that got equipped some other way
 							lastCheck = os.clock()
@@ -14377,8 +14383,8 @@ do
 			end)
 		end
 		AutoRebirth.state.before = function()   -- called by Auto Rebirth right before every rebirth try
-			if not kOn then return end
-			while alive and eq.probing do task.wait(0.1) end   -- Kaitun Enchant is looking for the Richest pets: let it finish first
+			if not (kOn and stOn) then return end
+			while alive and eq.probing do task.wait(0.1) end   -- Kaitun Stats is looking for the Richest pets: let it finish first
 			if os.clock() - eq.lastSwap < SWAP_MIN then return end
 			eq.lastSwap = os.clock()
 			eq.swapping = true
@@ -14390,31 +14396,31 @@ do
 		AutoRebirth.state.after = function()
 			if not eq.swapping then return end
 			eq.swapping = false
-			if kOn then
+			if kOn and stOn then
 				local ok = equipMode("Luck", 3)
 				if ok then task.wait(0.5) pcall(SecretGuard.sweep) end   -- secret pets never stay equipped
 			end
-			eq.swapEnd = os.clock()   -- Kaitun Enchant waits a few seconds after this before it reads the equipped pets
+			eq.swapEnd = os.clock()   -- Kaitun Stats waits a few seconds after this before it reads the equipped pets
 		end
 
-		-- Kaitun Hatch starts Auto Rebirth + Auto Equip (after the rows of the other tabs exist)
-		local hat = { run = 0 }
-		-- Starts the Kaitun hatch modules.
-		local function startHatchModules(my)
+		-- Kaitun Stats starts Auto Rebirth + Auto Equip (needs Kaitun Hatch; after the rows of the other tabs exist)
+		local hat = { run = 0 }   -- generation counter: bumped whenever Kaitun Hatch or Kaitun Stats is switched, so an old start never runs
+		-- Starts the Auto Rebirth + Auto Equip modules of Kaitun Stats.
+		local function startStatsModules(my)
 			for _ = 1, 40 do
-				if not (alive and kOn and hat.run == my) then return end
+				if not (alive and kOn and stOn and hat.run == my) then return end
 				if AutoRebirth[1]._setUI then break end
 				task.wait(0.25)
 			end
 			task.wait(0.4)
-			if not (alive and kOn and hat.run == my) then return end
+			if not (alive and kOn and stOn and hat.run == my) then return end
 			if K.skip.rebirth then return end   -- switched off with its green check on the Kaitun tab
 			rebirthApply(true)
 			equipApply(true)
 		end
 		K.hooks.rebirth = {
-			active = function() return kOn end,
-			on = function() task.spawn(startHatchModules, hat.run) end,
+			active = function() return kOn and stOn end,
+			on = function() task.spawn(startStatsModules, hat.run) end,
 			off = function() pcall(rebirthApply, false) pcall(equipApply, false) end,
 		}
 
@@ -14500,7 +14506,7 @@ do
 				if not okSweep then warn("[WORST Hub] Kaitun: switching the other features off failed: " .. tostring(errSweep)) end
 				if Config.shell then pcall(Config.shell.set, true) end
 				if origCb then origCb(true) end
-				task.spawn(startHatchModules, hat.run)   -- Auto Rebirth + Auto Equip
+				if stOn then task.spawn(startStatsModules, hat.run) end   -- Kaitun Stats' Auto Rebirth + Auto Equip (Kaitun Hatch itself no longer touches pets)
 			else
 				pcall(rebirthApply, false)
 				pcall(equipApply, false)
@@ -14511,7 +14517,7 @@ do
 			end
 		end
 
-		---------------------------------------------------------------- Kaitun Enchant (its own module: it never touches another toggle, and an error in it never reaches them)
+		---------------------------------------------------------------- Kaitun Stats (its own module: it never touches another toggle, and an error in it never reaches them)
 		-- Waits for Kaitun Hatch. Works ONLY while you are really hatching (HG.isHatching). Uses the game's own server-side auto roll (EnchantService),
 		-- one pet and one slot at a time:  1) the pets you have equipped -> Secret Hunter / Four Leaf / Lucky 3 in both slots
 		--                                  2) when those are done -> the pets "Richest" would equip (asked from the server once, then Luckiest is put back) -> Renewal 3
@@ -14537,7 +14543,7 @@ do
 			local fails = 0
 			local stick = nil                 -- pet we are working on: remains eligible after it is temporarily unequipped
 
-			-- Sets the status text of Kaitun Enchant.
+			-- Sets the status text of Kaitun Stats.
 			local function status(text) local l = enchEntry._desc if l and l.Parent then l.Text = text end end
 			-- True while this enchant run is still the current one.
 			local function act(my) return alive and on and run == my end
@@ -14886,7 +14892,7 @@ do
 					if not act(my) then return end
 					used[key] = true
 					if lastReason ~= "InvalidSlot" then fails = fails + 1 end   -- "no such slot" is a normal skip
-					warn("[Kaitun Enchant] skipped " .. label .. ": " .. tostring(lastReason))
+					warn("[Kaitun Stats] skipped " .. label .. ": " .. tostring(lastReason))
 					return
 				end
 
@@ -14944,7 +14950,7 @@ do
 					status("Out of gems - waiting 30 s...") nap(my, 30)
 				else
 					fails = fails + 1
-					warn("[Kaitun Enchant] " .. label .. " stopped with reason " .. reason)
+					warn("[Kaitun Stats] " .. label .. " stopped with reason " .. reason)
 				end
 				nap(my, 0.7)
 			end
@@ -14994,12 +15000,12 @@ do
 				nap(my, RECHECK)
 			end
 
-			-- Main loop of Kaitun Enchant.
+			-- Main loop of Kaitun Stats.
 			local function loop(my)
 				while act(my) do
 					local okS, errS = pcall(step, my)
 					if not okS then
-						warn("[Kaitun Enchant] error: " .. tostring(errS))
+						warn("[Kaitun Stats] error: " .. tostring(errS))
 						status("Error - see the output, retrying in 5 s")
 						pcall(release)
 						nap(my, 5)
@@ -15011,14 +15017,14 @@ do
 			------------------------------------------------ the toggle
 			local function needHatchPopup()
 				local closed = false
-				-- Closes the Kaitun Enchant run.
+				-- Closes the Kaitun Stats run.
 				local function close()
 					if closed then return end
 					closed = true
 					if on and enchEntry._setUI then pcall(enchEntry._setUI, false) end   -- closing the pop up switches the toggle off again
 				end
 				local pop = Config.kaitunPopup
-				if type(pop) == "function" and pcall(pop, "Run Kaitun Hatch First", "Kaitun Enchant needs Kaitun Hatch to be running.", close) then return end
+				if type(pop) == "function" and pcall(pop, "Run Kaitun Hatch First", "Kaitun Stats needs Kaitun Hatch to be running.", close) then return end
 				close()
 			end
 			enchEntry.callback = function(v)
@@ -15050,7 +15056,30 @@ do
 					loop(my)
 				end)
 			end
-		end, function(e) warn("[WORST Hub] Kaitun Enchant failed to load: " .. tostring(e)) end)
+		end, function(e) warn("[WORST Hub] Kaitun Stats failed to load: " .. tostring(e)) end)
+
+		---------------------------------------------------------------- Kaitun Stats also runs Auto Rebirth + Auto Equip (needs Kaitun Hatch)
+		-- wrapped around the enchant callback, so rebirth + equip keep working even if the enchant part failed to load
+		do
+			local stEntry = K.enchant
+			if stEntry then
+				local innerCb = stEntry.callback
+				stEntry.callback = function(v)
+					v = v == true
+					if v ~= stOn then
+						stOn = v
+						hat.run = hat.run + 1
+						if v then
+							if kOn then task.spawn(startStatsModules, hat.run) end   -- Kaitun Hatch off: they start as soon as it is switched on
+						else
+							pcall(rebirthApply, false)
+							pcall(equipApply, false)
+						end
+					end
+					if innerCb then return innerCb(v) end
+				end
+			end
+		end
 
 		---------------------------------------------------------------- the Kaitun tab: three toggles (+ "Craft When Storage Is" under the first while it is on)
 		TAB_SCRIPTS.Kaitun = { mainEntry, statsEntry, K.enchant }
@@ -16046,7 +16075,7 @@ end
 
 ---------------------------------------------------------------- webhook (input + Test Webhook + Save Webhook)
 local BOT_NAME = "WORST • Tap simulator"
-local BOT_AVATAR = "https://github.com/Asaiya2/steal-an-egg/blob/main/neW.png?raw=true"
+local BOT_AVATAR = "https://static.vecteezy.com/system/resources/previews/004/891/075/non_2x/the-initials-w-logo-is-simple-and-modern8868-free-vector.jpg"
 
 -- Returns the executor's HTTP request function.
 local function getRequestFunction()
@@ -16951,7 +16980,7 @@ local function buildScriptPage(tabName, entries)
 		end
 	else
 		local SUBTITLES = {
-			Kaitun = "Two toggles: Kaitun Hatch runs your setup + rebirth, Kaitun Events runs chests, Trick or Treat, the boss and the shop.",
+			Kaitun = "Kaitun Hatch runs your setup, Kaitun Events runs chests, Trick or Treat, the boss and the shop, Kaitun Stats equips, rebirths and enchants.",
 			Farming = "Hatch eggs and rebirth automatically.",
 		}
 		label(page, SUBTITLES[tabName] or "Press a button to run its script.", 322, 149, 19, C.sub, Enum.Font.Gotham)
@@ -17105,7 +17134,7 @@ function Config.startAutoSave()
 end
 
 -- ids that were renamed: an old save still loads into the new control
-local ID_ALIAS = { ["Kaitun/Kaitun Mode"] = "Kaitun/Kaitun Hatch" }
+local ID_ALIAS = { ["Kaitun/Kaitun Mode"] = "Kaitun/Kaitun Hatch", ["Kaitun/Kaitun Enchant"] = "Kaitun/Kaitun Stats" }
 -- the Settings tab used to be one flat list: "Settings/<name>" is now "Settings/<page>/<name>"
 for _, pg in ipairs(TAB_SCRIPTS.Settings.pages or {}) do
 	for _, e in ipairs(pg.entries) do
@@ -17757,18 +17786,18 @@ do
 		local card
 		if klist then   -- last row of the Kaitun list: scrolls with the rows instead of floating over them
 			card = new("Frame", {
-				Name = "KaitunInfoCard", LayoutOrder = 1000, Size = UDim2.fromOffset(1066, 724),
+				Name = "KaitunInfoCard", LayoutOrder = 1000, Size = UDim2.fromOffset(1066, 800),
 				BackgroundColor3 = C.card, BackgroundTransparency = CARD_T, BorderSizePixel = 0,
 			}, klist)
 		else
-			card = frame(page, 323, 395, 1080, 724, C.card, CARD_T)
+			card = frame(page, 323, 395, 1080, 800, C.card, CARD_T)
 		end
 		corner(card, UDim.new(0, 14))
 		stroke(card, C.stroke, 1)
 		frame(card, 0, 90, 1066, 1, C.stroke)
 		frame(card, 533, 112, 1, 312, C.stroke)
 
-		local checksL, checksR = {}, {}
+		local checksL, checksR, checksS = {}, {}, {}
 		-- (helpers are kept as fields of checksL so this block adds no local variables to the script)
 		function checksL.skipped(key) return kt and kt.skip and kt.skip[key] == true end
 		-- Paints one checklist item (on / skipped).
@@ -17779,8 +17808,13 @@ do
 			e.title.TextColor3 = sk and Color3.fromRGB(105, 105, 105) or C.text
 		end
 		-- Returns whether a group is on.
-		function checksL.state(group) return group == checksL and (kt and kt.main and kt.main._get and kt.main._get() or false)
-			or (kt and kt.second and kt.second._get and kt.second._get() or false) end
+		function checksL.state(group)
+			if group == checksL then return kt and kt.main and kt.main._get and kt.main._get() or false end
+			if group == checksS then   -- Kaitun Stats parts only run while Kaitun Hatch is on too
+				return (kt and kt.enchant and kt.enchant._get and kt.enchant._get() or false) and (kt and kt.main and kt.main._get and kt.main._get() or false) and true or false
+			end
+			return kt and kt.second and kt.second._get and kt.second._get() or false
+		end
 		-- Builds one checklist row on the Home page.
 		local function item(group, key, x, cx, y, n, title, line1, line2)
 			label(card, n .. ".)", x, y + 14, 19, C.sub, Enum.Font.GothamMedium)
@@ -17820,7 +17854,6 @@ do
 		item(checksL, "delete", 28, 500, 112, 1, "Auto Delete Pets", "Common to Legendary, Normal to Rainbow,", "on every island.")
 		item(checksL, "hatch", 28, 500, 192, 2, "Auto Hatch + Auto Craft", "Hatches the latest detected egg and crafts Golden,", "Diamond and Rainbow, then collects Rainbow.")
 		item(checksL, "afk", 28, 500, 272, 3, "Anti AFK, Auto Rejoin, Status", "Switched on too. Everything runs in the", "order set in the Priority tab.")
-		item(checksL, "rebirth", 28, 500, 352, 4, "Auto Rebirth + Auto Equip", "Rebirths with the Best amount you can afford,", "equips Richest pets right before each rebirth.")
 
 		-- right: Kaitun Events
 		label(card, "What Kaitun Events does", 583, 34, 24, C.text, Enum.Font.GothamMedium)
@@ -17830,15 +17863,16 @@ do
 		item(checksR, "boss", 583, 1037, 272, 3, "Auto Kill Hallow Boss", "Fights the Hallow Lord when it shows up.", "")
 		item(checksR, "shop", 583, 1037, 352, 4, "Auto Purchase Items", "Buys every Halloween shop item,", "checking the shop once every hour.")
 
-		-- middle, below both columns: Kaitun Enchant
+		-- middle, below both columns: Kaitun Stats
 		frame(card, 0, 462, 1066, 1, C.stroke)
-		local enchTitle = label(card, "What Kaitun Enchant does", 533, 496, 24, C.text, Enum.Font.GothamMedium, Enum.TextXAlignment.Center)
-		label(card, "Needs Kaitun Hatch. Only works while you are hatching, and runs on its own.", 533, 524, 16, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
+		local enchTitle = label(card, "What Kaitun Stats does", 533, 496, 24, C.text, Enum.Font.GothamMedium, Enum.TextXAlignment.Center)
+		label(card, "Needs Kaitun Hatch. Equips + rebirths, and enchants while you are hatching.", 533, 524, 16, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
 		label(card, "1.)  Your equipped pets", 533, 566, 19, C.text, Enum.Font.GothamMedium, Enum.TextXAlignment.Center)
 		label(card, "Two Four-Leaf, two Secret Hunter, remaining Lucky III; one matching slot per pet.", 533, 592, 16, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
 		label(card, "2.)  The pets Richest equips before a rebirth", 533, 634, 19, C.text, Enum.Font.GothamMedium, Enum.TextXAlignment.Center)
 		label(card, "Renewal 3, once your equipped pets have their enchants.", 533, 660, 16, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
-		label(card, "If Kaitun Hatch is off, a pop up asks you to run it first and the toggle switches itself off again.", 533, 698, 14, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
+		item(checksS, "rebirth", 283, 783, 700, 3, "Auto Equip + Auto Rebirth", "Luckiest pets while hatching, Richest pets right before each rebirth,", "rebirths with the Best amount you can afford.")
+		label(card, "If Kaitun Hatch is off, a pop up asks you to run it first and the toggle switches itself off again.", 533, 776, 14, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
 
 		task.spawn(function()
 			while alive and card.Parent do
@@ -17848,13 +17882,14 @@ do
 				local statsOn = kt and kt.second and kt.second._get and kt.second._get() or false
 				for _, e in ipairs(checksL) do checksL.paint(e, hatchOn) end
 				for _, e in ipairs(checksR) do checksL.paint(e, statsOn) end
+				for _, e in ipairs(checksS) do checksL.paint(e, checksL.state(checksS)) end
 				task.wait(0.25)
 			end
 		end)
 	end
 end
 
--- Pop up used by Kaitun Enchant ("Run Kaitun Hatch First"). onClose runs once, when the pop up is closed (Kaitun Enchant switches itself off there).
+-- Pop up used by Kaitun Stats ("Run Kaitun Hatch First"). onClose runs once, when the pop up is closed (Kaitun Stats switches itself off there).
 do
 	local pop = nil
 	Config.kaitunPopup = function(title, sub, onClose)
@@ -18142,7 +18177,7 @@ do
 		local enchRow = ench and ench._row
 		if on then
 			row.Parent = list
-			row.LayoutOrder = 2                                  -- Kaitun Hatch = 1, this slider = 2, Kaitun Events = 3, Kaitun Enchant = 4
+			row.LayoutOrder = 2                                  -- Kaitun Hatch = 1, this slider = 2, Kaitun Events = 3, Kaitun Stats = 4
 			if statsRow then statsRow.LayoutOrder = 3 end
 			if enchRow then enchRow.LayoutOrder = 4 end
 		else
@@ -19127,7 +19162,7 @@ end
 ------------------------------------------------------------------ LITE MODE
 -- Only while NOTHING has been toggled by hand since the script was executed (record.userToggled stays false):
 --   hub left alone for IDLE_SECS  ->  "Are you afk?" popup  ->  [No] closes it and restarts the timer
---   popup ignored for AFK_SECS    ->  main window closes, a small window opens with Kaitun Hatch + Kaitun Enchant (both switched on; Kaitun Events is not)
+--   popup ignored for AFK_SECS    ->  main window closes, a small window opens with Kaitun Hatch + Kaitun Stats (both switched on; Kaitun Events is not)
 -- Any press / scroll on the hub, minimizing, or an open dialog counts as activity. Toggling anything yourself (also in the
 -- Lite window) turns this watcher off for good. While the Lite window is open the FPS cap is forced to 5. The Lite window has a "Full UI" button (or press the minimize key) to go back.
 -- Everything lives inside one function so it does not use up the script's local-variable limit.
@@ -19178,7 +19213,7 @@ task.spawn(function()
 	stroke(noBtn, C.stroke, 1)
 
 	------------------------------------------------ the Lite window (same look as the main UI, but light: 8 embers, one rotating border)
-	local LW, LH = 290, (kt.enchant and 260 or 208)   -- room for the Kaitun Enchant switch
+	local LW, LH = 290, (kt.enchant and 260 or 208)   -- room for the Kaitun Stats switch
 	local lite = panel("LiteUI", LW, LH, 250)
 	lite.Position = UDim2.fromOffset(16, 16)
 	lite.Active = true
@@ -19283,7 +19318,7 @@ task.spawn(function()
 	end
 	local paintA = makeSwitch(64, "Kaitun Hatch", "⚡", kt.main)
 	local paintB = makeSwitch(116, "Kaitun Events", "📊", kt.second)
-	local paintC = kt.enchant and makeSwitch(168, "Kaitun Enchant", "🔮", kt.enchant) or function() end
+	local paintC = kt.enchant and makeSwitch(168, "Kaitun Stats", "🔮", kt.enchant) or function() end
 	-- Redraws all Mini Ui switches.
 	local function paintAll() paintA() paintB() paintC() end
 
@@ -19375,7 +19410,7 @@ task.spawn(function()
 		pcall(function() if kt.main._setUI then kt.main._setUI(true) end end)     -- no-op when it is already on
 		pcall(function() if kt.enchant and kt.enchant._setUI then kt.enchant._setUI(true) end end)   -- Kaitun Events stays as it is: switch it on yourself if you want it
 		paintAll()
-		print("[WORST Hub] Lite mode: idle, switched to the small window (Kaitun Hatch + Kaitun Enchant on).")
+		print("[WORST Hub] Lite mode: idle, switched to the small window (Kaitun Hatch + Kaitun Stats on).")
 	end
 	record.exitLite = function()
 		if not record.liteActive then return end
