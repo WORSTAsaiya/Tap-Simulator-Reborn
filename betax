@@ -3646,14 +3646,18 @@ local function buildLogic()
 				elseif #targets > 0 then
 					local r = goCraftLocked(id, targets)
 					if r == "stopped" then return end
-					if r == "fail" then return stopWith(id, "Stopped: crafts keep failing") end
-					if r == "nowindow" then
-						return stopWith(id, "Stopped: machine window not open / fewer than " .. NEED .. " " .. tostring(curText) .. " in it")
-					end
 					if r == "limit" then return stopWith(id, "Done: reached " .. MAX_CRAFTS .. " crafts") end
-					if r == "busy" then
+					if r == "fail" or r == "nowindow" then
+						-- a failed trip / refused crafts no longer switch Auto Craft off for good: back off and try again
+						HG.craftFails = (HG.craftFails or 0) + 1
+						local backoff = math.min(30 * HG.craftFails, 300)
+						setStatus(string.format("Craft trip failed (%s, try %d) - retrying in %ds | crafts %d", r, HG.craftFails, backoff, crafts))
+						lastScanAt = -1e9
+						sleepWhile(id, backoff)
+					elseif r == "busy" then
 						setStatus("Inventory stayed open - will retry next cycle")
 					else
+						HG.craftFails = 0
 						setStatus(string.format("Cycle done | total crafts %d | next check soon", crafts))
 					end
 				elseif next(craftWant) ~= nil then
@@ -6944,9 +6948,25 @@ local function buildLogic()
 			if not skip.hatch then hatchOn(notes) end
 			-- 4) Anti AFK + Auto Rejoin + Show Status
 			if not skip.afk then afkOn(notes) end
+			-- watchdog: if Golden Auto Craft ends up "Stopped: ..." while Kaitun Hatch is on, switch it back on
+			HG.craftWatch = (HG.craftWatch or 0) + 1
+			local myWatch = HG.craftWatch
+			task.spawn(function()
+				while alive and kaitunOn and HG.craftWatch == myWatch do
+					task.wait(20)
+					if not (alive and kaitunOn and HG.craftWatch == myWatch) then break end
+					if not skip.hatch and craftEntry._get and craftEntry._setUI and not craftEntry._get() then
+						local okT, txt = pcall(function() return craftEntry._desc and craftEntry._desc.Text or "" end)
+						if okT and type(txt) == "string" and txt:find("^Stopped") then
+							warn("[WORST Hub] Kaitun: Golden Auto Craft had stopped (" .. txt .. ") - switching it back on")
+							pcall(flip, craftEntry, true)
+						end
+					end
+				end
+			end)
 			local parts = {}
 			if not skip.delete then parts[#parts + 1] = "deleting Common-Legendary (Farming + Pets)" end
-			if not skip.hatch then parts[#parts + 1] = "hatching latest egg" parts[#parts + 1] = "crafting at 50% storage" end
+			if not skip.hatch then parts[#parts + 1] = "hatching latest egg" parts[#parts + 1] = "crafting as soon as pets allow" end
 			if not skip.afk then parts[#parts + 1] = "Anti AFK + Auto Rejoin + Status" end
 			say(#notes == 0 and ("On | " .. (#parts > 0 and table.concat(parts, " | ") or "everything skipped"))
 				or ("On, but: " .. table.concat(notes, "; ")))
