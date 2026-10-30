@@ -11868,7 +11868,7 @@ local TradeAgent = (function()
             end
 
             -- Unlocks pets (optionally only those matching `filter`).
-            function D.unlock(filter)   -- filter(name, tier) -> true = may be unlocked (nil = every locked pet)
+            function D.unlock(filter, anyRarity)   -- filter(name, tier) -> true = may be unlocked (nil = every locked pet). Only Secret pets, unless anyRarity (used by Multi Trade for the pet it moves)
                 if not AUTO_UNLOCK then return 0 end
                 if busy then return 0 end
                 local data = replica()
@@ -11891,7 +11891,7 @@ local TradeAgent = (function()
                     if type(p) == "table" and type(p.Name) == "string" then
                         local cooled = (os.clock() - (unlockLastTry[id] or -1e9)) >= UNLOCK_COOLDOWN
                         local gaveUp = (unlockFails[id] or 0) >= UNLOCK_MAX_FAILS
-                        if cooled and not gaveUp and not nameIn(UNLOCK_SKIP, p.Name) and isSecretPet(p.Name, p.Rarity or p.rarity) and (not filter or filter(p.Name, tostring(p.Tier or "Normal"))) then
+                        if cooled and not gaveUp and not nameIn(UNLOCK_SKIP, p.Name) and (anyRarity or isSecretPet(p.Name, p.Rarity or p.rarity)) and (not filter or filter(p.Name, tostring(p.Tier or "Normal"))) then
                             targets[#targets + 1] = { id = id, name = p.Name, tier = tostring(p.Tier or "Normal") }
                         end
                     end
@@ -12771,6 +12771,10 @@ local TradeAgent = (function()
             -- v23 FLEX: the site asks for "up to N". Count what is really free right now (not locked, not equipped) and give that many,
             -- like the Giveaway page does, instead of failing when the site's number was too high.
             if t.flex and #t.rules == 1 then
+                if AUTO_UNLOCK then   -- a locked copy of the pet being moved is unlocked first (any rarity), so everything can go. Set AUTO_UNLOCK = false to keep your locks.
+                    setTrade(id, "scanning", true, "unlocking locked copies of this pet")
+                    pcall(DATA.unlock, function(nm, tr) return ruleMatches(t.rules[1], nm, tr) end, true)
+                end
                 local okF, groups = pcall(DATA.tradePets, nil, {})
                 if okF and type(groups) == "table" then
                     local free, rule = 0, t.rules[1]
