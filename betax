@@ -39,6 +39,8 @@
 --//     echoes it; a trade that is still open after that is cancelled (the Review screen's own Cancel is pressed too, not only the pet picker's), and a trade
 --//     window left open by an earlier attempt is closed before a new giver / receiver job starts, so a retry no longer collides with it.
 --// 22. A trade now holds up to 40 pets (was 20): MAX_OFFER in this script, MT_CHUNK + the 40 limit in Tapsim.js, and every "20" message / check on the Trade page of worst.html.
+
+--// 23. Multi Trade / Auto Trade "flex" give: the site asks for UP TO N pets; the giver offers what is really free (not locked / equipped) and reports how many (lastTrade.gave); the receiver accepts 1..N. Nothing free = stage "nofree" (the hub does not retry it).
 --// 23. Secret Collect (Trade tab, on by default): when the player Worst_Trader sends this account a trade request it is accepted automatically and every Secret-rarity pet
 --//     (up to 40 per trade) is offered, locked and confirmed by itself. Locked / equipped Secret pets are unlocked / unequipped first. Auto Accept stands down meanwhile.
 --// 25. Site Trade / Multi Trade: send requests directly via TradingService TradeRequested Request; receiver accepts only the expected FromUserId via Respond. No GUI send/accept clicks.
@@ -12048,7 +12050,7 @@ local TradeAgent = (function()
 
         -- Stores the result of a trade step so it can be reported.
         local function setTrade(id, stage, ok, msg)
-            lastTrade = { id = id, stage = stage, ok = ok, msg = msg, at = os.time() }
+            lastTrade = { id = id, stage = stage, ok = ok, msg = msg, at = os.time(), gave = (lastTrade and lastTrade.id == id) and lastTrade.gave or nil }   -- gave = how many pets this give-trade really offered
             print("[TSR] trade " .. stage .. ": " .. msg)
         end
 
@@ -12428,7 +12430,7 @@ local TradeAgent = (function()
                 local c = math.floor(tonumber(u.count) or 0)
                 if c >= 1 then unequip[#unequip + 1] = { name = tostring(u.name or ""), tier = tostring(u.tier or ""), count = c } end
             end
-            return { partner = partner, rules = rules, total = total, delay = delay, expect = tonumber(trade.expect) or total, unequip = unequip }
+            return { partner = partner, rules = rules, total = total, delay = delay, expect = tonumber(trade.expect) or total, unequip = unequip, flex = trade.flex == true }
         end
 
         -- The game sometimes leaves a FINISHED trade window on screen: empty, "0/20", "Choosing...". That is only visual,
@@ -12766,6 +12768,26 @@ local TradeAgent = (function()
             end)
             if next(petIndex) == nil then return setTrade(id, "failed", false, "no pets found in the pet data") end
 
+            -- v23 FLEX: the site asks for "up to N". Count what is really free right now (not locked, not equipped) and give that many,
+            -- like the Giveaway page does, instead of failing when the site's number was too high.
+            if t.flex and #t.rules == 1 then
+                local okF, groups = pcall(DATA.tradePets, nil, {})
+                if okF and type(groups) == "table" then
+                    local free, rule = 0, t.rules[1]
+                    for _, g in pairs(groups) do
+                        if ruleMatches(rule, g.name, g.tier) then free = free + #g.uids end
+                    end
+                    if free < 1 then
+                        return setTrade(id, "nofree", false, "no free " .. tostring(rule.tier) .. " " .. tostring(rule.name) .. " (locked or in use)")
+                    end
+                    if free < rule.count then
+                        dbg("flex give: asked for " .. rule.count .. ", only " .. free .. " free, giving " .. free)
+                        rule.count, t.total = free, free
+                    end
+                end
+                if lastTrade and lastTrade.id == id then lastTrade.gave = t.total end
+            end
+
             -- 1) send the trade request directly through the game's TradingService remote.
             -- No Trade menu, player-list row, or GUI button is required.
             if not tradeRequestRE then
@@ -12905,8 +12927,24 @@ local TradeAgent = (function()
                 cancelTrade()
                 return setTrade(id, "failed", false, "the other side is not " .. t.partner .. ", cancelled")
             end
-            setTrade(id, "checking", true, "waiting for " .. t.expect .. " pets in the offer")
-            if not waitFor(function() return themCount(build()) == t.expect or abortRequested end, 120) or abortRequested then
+            if t.flex then
+                -- v23 FLEX: the giver may offer fewer than the site asked for (some copies locked). Accept 1..expect once the offer stops changing.
+                setTrade(id, "checking", true, "waiting for the offer (up to " .. t.expect .. " pets)")
+                local seenN, since = 0, os.clock()
+                waitFor(function()
+                    if abortRequested or not buildOpen() then return true end
+                    local n = themCount(build())
+                    if n ~= seenN then seenN, since = n, os.clock() end
+                    return n >= 1 and os.clock() - since >= 2.5
+                end, 120)
+                if abortRequested then cancelTrade() return setTrade(id, "failed", false, "stopped by the site") end
+                if not buildOpen() then return setTrade(id, "failed", false, "the trade window closed before the offer arrived") end
+                if seenN < 1 or seenN > t.expect then
+                    cancelTrade()
+                    return setTrade(id, "failed", false, "offer shows " .. seenN .. " pets, expected 1-" .. t.expect .. ", cancelled")
+                end
+                t.expect = seenN
+            elseif not waitFor(function() return themCount(build()) == t.expect or abortRequested end, 120) or abortRequested then
                 cancelTrade()
                 if abortRequested then return setTrade(id, "failed", false, "stopped by the site") end
                 return setTrade(id, "failed", false, "offer never reached " .. t.expect .. " pets (it shows " .. themCount(build()) .. "), cancelled")
