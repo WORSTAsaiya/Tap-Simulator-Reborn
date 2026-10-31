@@ -39,6 +39,8 @@
 --//     echoes it; a trade that is still open after that is cancelled (the Review screen's own Cancel is pressed too, not only the pet picker's), and a trade
 --//     window left open by an earlier attempt is closed before a new giver / receiver job starts, so a retry no longer collides with it.
 --// 22. A trade now holds up to 40 pets (was 20): MAX_OFFER in this script, MT_CHUNK + the 40 limit in Tapsim.js, and every "20" message / check on the Trade page of worst.html.
+
+--// 23. Multi Trade / Auto Trade "flex" give: the site asks for UP TO N pets; the giver offers what is really free (not locked / equipped) and reports how many (lastTrade.gave); the receiver accepts 1..N. Nothing free = stage "nofree" (the hub does not retry it).
 --// 23. Secret Collect (Trade tab, on by default): when the player Worst_Trader sends this account a trade request it is accepted automatically and every Secret-rarity pet
 --//     (up to 40 per trade) is offered, locked and confirmed by itself. Locked / equipped Secret pets are unlocked / unequipped first. Auto Accept stands down meanwhile.
 --// 25. Site Trade / Multi Trade: send requests directly via TradingService TradeRequested Request; receiver accepts only the expected FromUserId via Respond. No GUI send/accept clicks.
@@ -396,7 +398,7 @@ new("UIGradient", {
 icon(window, "logo", "", 56, 52, 60) -- only shows if an image id is set
 
 label(window, 'WORST •<font color="rgb(170,170,170)">Tap Simulator</font>', 108, 39, 33, C.text, Enum.Font.GothamBold)
-label(window, "by Asaiya", 108, 72, 19, C.sub, Enum.Font.Gotham)
+label(window, "Free Version", 108, 72, 19, C.sub, Enum.Font.Gotham)
 
 local minLabel = label(window, "—", 1347, 37, 20, C.text, Enum.Font.GothamBold, Enum.TextXAlignment.Center)
 minLabel.Size = UDim2.fromOffset(40, 30)
@@ -988,7 +990,7 @@ end
 -- Put the 10 files into  <executor workspace>/WORSTHub/   -OR- upload them somewhere and set BG_URL to that folder link (ending with "/").
 -- If the files can't be found the hub simply keeps its normal plain background.
 do
-	local BG_URL = "https://raw.githubusercontent.com/Asaiya2/Background/main/"
+	local BG_URL = "https://raw.githubusercontent.com/WORSTAsaiya/Background/main/"
 	local SHEETS, COLS, ROWS, TOTAL = 10, 3, 5, 150
 	local FRAME_W, FRAME_H, FPS = 320, 194, 30
 	local getAsset = getcustomasset or getsynasset
@@ -2066,7 +2068,7 @@ local function buildLogic()
 		return HG.want and HG.rank("Hatch") < p
 	end
 	HG.sync = function()
-		local run = HG.want and tripOwner == nil and not HG.hold and not HG.kwHold
+		local run = HG.want and tripOwner == nil and not HG.hold and not HG.kwHold and os.clock() >= (HG.pdHoldUntil or 0)   -- pdHoldUntil: Pet Defense is about to start (30 s hold)
 		if run then
 			local hr = HG.rank("Hatch")
 			for _, q in pairs(HG.waiting) do if q < hr then run = false break end end
@@ -2079,7 +2081,7 @@ local function buildLogic()
 				local best = 99
 				for n, q in pairs(HG.waiting) do if q < best then best, who = q, n end end
 			end
-			hSetStatus((HG.hold or HG.kwHold) and "Waiting for Auto Delete to finish before hatching..." or ("Paused - " .. tostring(who or "a feature with a higher priority") .. " is working"))
+			hSetStatus((os.clock() < (HG.pdHoldUntil or 0)) and "Paused - Pet Defense is about to start (30 s)" or (HG.hold or HG.kwHold) and "Waiting for Auto Delete to finish before hatching..." or ("Paused - " .. tostring(who or "a feature with a higher priority") .. " is working"))
 		end
 	end
 	-- Kaitun Stats only works while this is true: Auto Hatch is really running (not paused by Craft / events / Auto Delete) and you are at the egg
@@ -2271,6 +2273,10 @@ local function buildLogic()
 	-- (scan, close the inventory, travel ...) and the answer is written to its status line, so a feature that is not doing anything says why.
 	HG.blocker = function(name)
 		local p = HG.prio(name)
+		-- Pet Defense is about to start (its cooldown just ended): for 30 s nothing else may start a trip, so the start is never interrupted
+		if name ~= "PetDefense" and os.clock() < (HG.pdHoldUntil or 0) then
+			return "Pet Defense is about to start (30 s hold)"
+		end
 		if tripOwner ~= nil then
 			return string.format("%s is on a machine trip right now (a trip can't be interrupted)", tostring(tripOwner))
 		end
@@ -8393,7 +8399,7 @@ local function buildLogic()
 	end
 
 	-------------------------------------------------------------------------- EVENTS > PET DEFENSE (Colosseum wave defense)
-	-- Travel to Mushroom, stand at the start spot, press "Play" on the Pet Defense popup, attack every opponent the moment it spawns, repeat.
+	-- Teleport straight to the start spot (no island travel), press "Play" on the Pet Defense popup, attack every opponent the moment it spawns, repeat.
 	-- Reward claim is confirmed: ClaimMinigameReward("keep"/"replace"). ReturnFromArena is attempted without arguments.
 	do
 		local okP, resP = pcall(function()
@@ -8418,7 +8424,7 @@ local function buildLogic()
 			local svc = find(RS, { "RemoteServices", "ColosseumService" })
 			assert(svc, "ColosseumService not found")
 
-			local DESC = "Travels to Mushroom, presses Play on the Pet Defense popup to start the Colosseum wave defense and taps the middle of the screen repeatedly to fight, then starts the next run (waits and retries while it is on cooldown). Needs the Mushroom island."
+			local DESC = "Teleports straight to the Pet Defense spot (no island travel), presses Play on the Pet Defense popup to start the Colosseum wave defense and taps the middle of the screen repeatedly to fight, then starts the next run (waits and retries while it is on cooldown)."
 			local toggle = {
 				-- TOGGLE "Auto Pet Defense": plays the Pet Defense event and handles the new ring by the chosen mode (Keep / Replace / Better).
 				type = "toggle", name = "Auto Pet Defense", icon = "🛡", default = false,
@@ -8430,8 +8436,8 @@ local function buildLogic()
 				options = { "Keep", "Replace", "Better" }, default = "Keep",
 			}
 			local infoEntry = {
-				type = "button", name = "Print Ring Info", icon = "📋", noSave = true,
-				desc = "Prints what the game data holds about your ring / the Colosseum, and the Colosseum remotes, to the console (F9).",
+				type = "button", name = "Current Ring", icon = "💍", noSave = true,
+				desc = "Shows your current ring (its name and four stats) in a small card. Also prints the ring data and the Colosseum remotes to the console (F9).",
 			}
 
 			local runId, mode = 0, "Keep"
@@ -8439,7 +8445,13 @@ local function buildLogic()
 			-- True while this Pet Defense run is still the current one.
 			local function active(id) return alive and runId == id end
 			-- Sets the status text of Pet Defense.
-			local function say(text) setDesc(toggle, text) end
+			local function say(text) pd.lastSay = text setDesc(toggle, text) end
+			-- Debug trace (F9 console): shows when Pet Defense gets / gives back the trip and where you are, to find what pulls you back to hatching.
+			local function tr(msg)
+				local h = getHRP()
+				print(string.format("[PetDefense][trace %.1f] %s | dist to spot %s | hatchOn=%s hatchWanted=%s tripOwner=%s", os.clock() % 1000, msg,
+					h and tostring(math.floor((h.Position - SPOT.Position).Magnitude)) or "?", tostring(hEnabled), tostring(HG.want), tostring(HG.owner())))
+			end
 			-- Waits `sec` while the run is active.
 			local function sleep(id, sec)
 				local t0 = os.clock()
@@ -8983,13 +8995,37 @@ local function buildLogic()
 							if not active(id) then return end
 						end
 					end
+					-- the cooldown is over: for the next 30 s Auto Hatch is paused and the other features wait, so nothing can pull you away
+					HG.pdHoldUntil = os.clock() + 30
+					task.delay(30.5, function() if alive then HG.sync() end end)
 					say("Waiting for its turn (another feature is on a trip)...")
-					if not acquireTrip("PetDefense", function() return active(id) end, say) then return end
+					if not acquireTrip("PetDefense", function() return active(id) end, say) then tr("acquireTrip gave up (run no longer active)") return end
+					tr("trip acquired")
 					local started = false
-					local ok, err = pcall(function()
-						say("Traveling to " .. ISLAND .. "...")
-						if not HG.travelAndTeleport(function() return active(id) end, ISLAND, SPOT, say, 100) then
-							say("Could not reach the start spot - retrying")
+					local ok, err
+					-- Two tries while still holding the trip: when the first start fails, Auto Hatch must NOT come back in between
+					-- (it used to resume at once, pull you back to the egg and only retry 30 s later).
+					for attempt = 1, 2 do
+					ok, err = pcall(function()
+						-- Auto Hatch was paused a moment ago: let it really stop first (its loops end on their next tick and the game's own
+						-- auto hatch (F) is switched off again), otherwise it can still be moving you / its panel can still be in the way
+						do
+							local s0 = os.clock()
+							while active(id) and os.clock() - s0 < 5 and (hEnabled or sessionPanelOpen()) do task.wait(0.1) end
+							sleep(id, 0.5)
+							tr(string.format("attempt %d: hatch settled (F panel open=%s)", attempt, tostring(sessionPanelOpen())))
+							if not active(id) then return end
+						end
+						if attempt > 1 then   -- second try: let the game bring you to the island first (it also loads the area around the popup)
+							say("Second try - traveling to " .. ISLAND .. " first...")
+							pcall(function() travelRemote:InvokeServer({ Source = "Menu", Island = ISLAND }) end)
+							sleep(id, 4)
+							if not active(id) then return end
+						end
+						-- first try: teleport straight to the Pet Defense spot (the loop below checks that we are really there and retries)
+						say("Teleporting to the Pet Defense spot...")
+						if not teleportTo(SPOT) then
+							say("Could not teleport (no character yet) - retrying")
 							return
 						end
                         -- the popup search only starts once the character is really standing on the start spot
@@ -9009,6 +9045,9 @@ local function buildLogic()
                                 return
                             end
                         end
+						tr("arrived at the spot") say("Arrived - waiting 2 s for the Pet Defense popup to appear...")
+						sleep(id, 2)   -- 2 s after teleporting, before the popup search starts (the popup needs a moment to show)
+						if not active(id) then return end
 						pd.over, pd.claimed, pd.wave, pd.spawned, pd.logN = nil, false, 1, 0, 0
 						pd.waveStarted = false
 						pd.run = true
@@ -9106,8 +9145,16 @@ local function buildLogic()
                         end
 					end)
 					pd.run = false
+					if started or not ok or not active(id) or attempt >= 2 then break end
+					print("[PetDefense] start failed (" .. tostring(pd.lastSay) .. ") - trying again, Auto Hatch stays paused")
+					sleep(id, 3)
+					end
+					pd.run = false
+					tr(string.format("releasing the trip | started=%s ok=%s stillActive=%s last status: %s", tostring(started), tostring(ok), tostring(active(id)), tostring(pd.lastSay)))
+					if started then HG.pdHoldUntil = 0 end   -- the run is over: let hatching and the other features come back right away
 					releaseTrip("PetDefense")
 					if not ok then warn("[PetDefense] error: " .. tostring(err)) end
+					if not started and active(id) then print("[PetDefense] could not start - last status: " .. tostring(pd.lastSay)) end
 					if active(id) then
 						local left, key = cooldownLeft()
 						if left and left > 1 then
@@ -9129,6 +9176,7 @@ local function buildLogic()
 			toggle.callback = function(on)
 				if not alive then return end
 				runId = runId + 1
+				print("[PetDefense][trace] toggle callback on=" .. tostring(on) .. " -> new run id " .. runId)
 				if on == true then
 					local popupRun = runId
 					task.spawn(function()
@@ -9140,13 +9188,36 @@ local function buildLogic()
 					task.spawn(loop, runId)
 				else
 					pd.run = false
+					HG.pdHoldUntil = 0
 					releaseTrip("PetDefense")
 					restoreDof()
 					say(DESC)
 				end
 			end
 
+			local STAT_LABEL = { Luck = "Luck", ClickMultiplier = "Click Mult", Rebirth = "Rebirth", Walkspeed = "Walkspeed" }
+			-- Turns a stat value into short text.
+			local function fmtStat(v)
+				local n = tonumber(v)
+				if not n then return tostring(v) end
+				if math.abs(n) >= 1000 then return string.format("%d", n) end
+				return string.format("%.4g", n)
+		end
 			infoEntry.run = function()
+				local cur = currentRelic()
+				local stats = {}
+				local boosts = cur and cur.Boosts
+				if type(boosts) == "table" then
+					for _, b in ipairs(boosts) do
+						if type(b) == "table" and #stats < 4 then stats[#stats + 1] = { name = STAT_LABEL[tostring(b.Type)] or tostring(b.Type), value = fmtStat(b.Value) } end
+					end
+					if #stats == 0 then
+						for _, b in pairs(boosts) do
+							if type(b) == "table" and #stats < 4 then stats[#stats + 1] = { name = STAT_LABEL[tostring(b.Type)] or tostring(b.Type), value = fmtStat(b.Value) } end
+						end
+					end
+				end
+				if Config and Config.ringCard then pcall(Config.ringCard, cur and tostring(cur.Name or "Ring") or "No ring yet", stats) end
 				local data = gameData()
 				print("[PetDefense] ---- Colosseum remotes ----")
 				for _, folder in ipairs({ "RF", "RE" }) do
@@ -9186,9 +9257,148 @@ local function buildLogic()
 				end
 				if data then pcall(walkD, data, 1, "") else print("game data not available") end
 			end
+
+			-- ---- POWER-UPS: teleport to the pickups on the arena floor (Sugar Rush = 2x damage, Freeze = enemies frozen 3 s, Treat = +1 Treat) ----
+			-- The pickups are found by their text label ("Sugar Rush!", "Freeze", "+1 Treat") in the world, so no object name has to be known.
+			-- Only pickups inside the arena are used, and only while a run is being fought. "Print Pickup Info" lists what was found (F9).
+			local grabToggle = {
+				type = "toggle", name = "Auto Collect Drop Boosts", icon = "⚡", default = false,
+				desc = "While Pet Defense is fighting: teleports to the pickups on the arena floor - Sugar Rush (2x damage), Candy Bomb, Freeze (enemies frozen 3 s) and, last, +1 Treat - then back to the arena center.",
+			}
+			local PU_RADIUS   = 250   -- studs from ARENA_CENTER: pickups further away are ignored (other events also have \"Treat\" texts)
+			local PU_LIFT     = 2     -- studs above the pickup the character is put at
+			local PU_STAY     = 0.5   -- seconds spent on a pickup before checking whether it is gone
+			local PU_TRIES    = 4     -- a pickup still on the floor after this many visits is ignored (it cannot be taken by touching)
+			local PU_PRIORITY = { sugar = 4, candy = 3, freeze = 2, treat = 1 }
+			local puLabels, puConns, puRun = {}, {}, 0
+			local function puOn(e) return e._get ~= nil and e._get() == true end
+			-- What kind of pickup a text belongs to (nil = not a pickup).
+			local function puKind(t)
+				t = (tostring(t or ""):lower():gsub("<[^>]->", ""))
+				if t:find("sugar", 1, true) then return "sugar" end
+				if t:find("candy", 1, true) or t:find("bomb", 1, true) then return "candy" end
+				if t:find("freeze", 1, true) or t:find("frozen", 1, true) then return "freeze" end
+				if t:find("treat", 1, true) and not t:find("trick", 1, true) then return "treat" end
+				return nil
+			end
+			-- Where the pickup of a label is in the world (nil = unknown).
+			local function puPos(lbl)
+				local bb = lbl:FindFirstAncestorWhichIsA("BillboardGui")
+				if bb then
+					local ad = bb.Adornee
+					if ad then
+						if ad:IsA("BasePart") then return ad.Position end
+						if ad:IsA("Attachment") then return ad.WorldPosition end
+						if ad:IsA("Model") then return ad:GetPivot().Position end
+					end
+					local par = bb.Parent
+					if par and par:IsA("Attachment") then return par.WorldPosition end
+					if par and par:IsA("BasePart") then return par.Position end
+				end
+				local part = lbl:FindFirstAncestorWhichIsA("BasePart")
+				if part then return part.Position end
+				local mdl = lbl:FindFirstAncestorWhichIsA("Model")
+				if mdl then return mdl:GetPivot().Position end
+				return nil
+			end
+			-- Remembers a text label when its text names a pickup (also when the text is set a moment later).
+			local function puWatch(d)
+				if not d:IsA("TextLabel") then return end
+				if puKind(d.Text) then puLabels[d] = true end
+				puConns[#puConns + 1] = d:GetPropertyChangedSignal("Text"):Connect(function()
+					if puKind(d.Text) then puLabels[d] = true else puLabels[d] = nil end
+				end)
+			end
+			local function puStart()
+				for _, root in ipairs({ workspace, lp:FindFirstChildOfClass("PlayerGui") }) do
+					if root then
+						for _, d in ipairs(root:GetDescendants()) do puWatch(d) end
+						puConns[#puConns + 1] = root.DescendantAdded:Connect(puWatch)
+					end
+				end
+			end
+			local function puStop()
+				for _, c in ipairs(puConns) do pcall(function() c:Disconnect() end) end
+				puConns = {}
+				puLabels = {}
+			end
+			-- The pickups on the floor now: { kind, pos }, one entry per pickup (labels close together are one pickup; the strongest kind wins).
+			local function puList(wantTreat)
+				local pts = {}
+				for lbl in pairs(puLabels) do
+					if lbl.Parent then
+						local k = puKind(lbl.Text)
+						local p = k and puPos(lbl)
+						if p and (p - ARENA_CENTER.Position).Magnitude <= PU_RADIUS then pts[#pts + 1] = { k = k, p = p } end
+					else
+						puLabels[lbl] = nil
+					end
+				end
+				local out = {}
+				for _, a in ipairs(pts) do
+					local merged = false
+					for _, o in ipairs(out) do
+						if (o.p - a.p).Magnitude < 8 then
+							if PU_PRIORITY[a.k] > PU_PRIORITY[o.k] then o.k = a.k end
+							merged = true
+							break
+						end
+					end
+					if not merged then out[#out + 1] = { k = a.k, p = a.p } end
+				end
+				local res = {}
+				for _, o in ipairs(out) do if o.k ~= "treat" or wantTreat then res[#res + 1] = o end end
+				return res
+			end
+			local function puKey(p) return string.format("%d,%d,%d", math.floor(p.X / 4), math.floor(p.Y / 4), math.floor(p.Z / 4)) end
+			local function puLoop(id)
+				local tries, away = {}, false
+				while alive and puRun == id and puOn(grabToggle) do
+					local hrp = getHRP()
+					if pd.fight and not pd.over and hrp then
+						local list = puList(true)
+						local here, present = hrp.Position, {}
+						for _, o in ipairs(list) do present[puKey(o.p)] = true end
+						for k in pairs(tries) do if not present[k] then tries[k] = nil end end   -- taken: forget it
+						table.sort(list, function(a, b)
+							if PU_PRIORITY[a.k] ~= PU_PRIORITY[b.k] then return PU_PRIORITY[a.k] > PU_PRIORITY[b.k] end
+							return (a.p - here).Magnitude < (b.p - here).Magnitude
+						end)
+						local target
+						for _, o in ipairs(list) do if (tries[puKey(o.p)] or 0) < PU_TRIES then target = o break end end
+						if target then
+							local k = puKey(target.p)
+							tries[k] = (tries[k] or 0) + 1
+							away = true
+							pcall(function() hrp.CFrame = CFrame.new(target.p + Vector3.new(0, PU_LIFT, 0)) end)
+							task.wait(PU_STAY)
+						else
+							if away then
+								away = false
+								pcall(function() hrp.CFrame = ARENA_CENTER end)   -- nothing left to grab: back to the arena center
+							end
+							task.wait(0.25)
+						end
+					else
+						away = false
+						task.wait(0.5)
+					end
+				end
+			end
+			grabToggle.callback = function(on)
+				if not alive then return end
+				puRun = puRun + 1
+				puStop()
+				if on == true then
+					puStart()
+					task.spawn(puLoop, puRun)
+				end
+			end
+			table.insert(cleanupHooks, function() puRun = puRun + 1 puStop() end)
+
 			table.insert(cleanupHooks, function() runId = runId + 1 pd.run = false end)
 
-			return { toggle = toggle, mode = modeEntry, info = infoEntry }
+			return { toggle = toggle, mode = modeEntry, info = infoEntry, grab = grabToggle }
 		end)
 		if okP then HG.petdef = resP else warn("[WORST Hub] Pet Defense failed to load: " .. tostring(resP)) end
 	end
@@ -11212,6 +11422,17 @@ local TradeAgent = (function()
         -- TRADE SAFETY (optional but recommended): list the ONLY usernames this account may ever trade with.
         -- Empty = whatever the site sends is allowed. Example: { "Thegreat_Worst", "MyAlt2" }
         local ALLOWED_PARTNERS = {}
+        -- SITE ACCOUNTS: only these Roblox accounts report to the site. Any other account running this script sends nothing.
+        local SITE_ACCOUNTS = {
+            "asaiyaz", "raiden_zel", "worstap1s", "worstap2", "jtk_jeffthikiller", "godpenta6", "remotiguenisa",
+            "worstap4", "worstap3s", "worstap1", "thegreat_worst", "raizelerator", "hdtphtd0941", "buhikyedy67",
+            "gachaverse_c0oper", "aimmfhuaab", "isahdifjosja", "worst_trader", "aiajbdjdhs",
+        }
+        local function siteAllowed(n)
+            n = string.lower(tostring(n or ""))
+            for _, a in ipairs(SITE_ACCOUNTS) do if a == n then return true end end
+            return false
+        end
         local MAX_OFFER = 40         -- the game's limit per trade
 
         -- DATA SCAN (v9)
@@ -11866,7 +12087,7 @@ local TradeAgent = (function()
             end
 
             -- Unlocks pets (optionally only those matching `filter`).
-            function D.unlock(filter)   -- filter(name, tier) -> true = may be unlocked (nil = every locked pet)
+            function D.unlock(filter, anyRarity)   -- filter(name, tier) -> true = may be unlocked (nil = every locked pet). Only Secret pets, unless anyRarity (used by Multi Trade for the pet it moves)
                 if not AUTO_UNLOCK then return 0 end
                 if busy then return 0 end
                 local data = replica()
@@ -11889,7 +12110,7 @@ local TradeAgent = (function()
                     if type(p) == "table" and type(p.Name) == "string" then
                         local cooled = (os.clock() - (unlockLastTry[id] or -1e9)) >= UNLOCK_COOLDOWN
                         local gaveUp = (unlockFails[id] or 0) >= UNLOCK_MAX_FAILS
-                        if cooled and not gaveUp and not nameIn(UNLOCK_SKIP, p.Name) and isSecretPet(p.Name, p.Rarity or p.rarity) and (not filter or filter(p.Name, tostring(p.Tier or "Normal"))) then
+                        if cooled and not gaveUp and not nameIn(UNLOCK_SKIP, p.Name) and (anyRarity or isSecretPet(p.Name, p.Rarity or p.rarity)) and (not filter or filter(p.Name, tostring(p.Tier or "Normal"))) then
                             targets[#targets + 1] = { id = id, name = p.Name, tier = tostring(p.Tier or "Normal") }
                         end
                     end
@@ -12048,7 +12269,7 @@ local TradeAgent = (function()
 
         -- Stores the result of a trade step so it can be reported.
         local function setTrade(id, stage, ok, msg)
-            lastTrade = { id = id, stage = stage, ok = ok, msg = msg, at = os.time() }
+            lastTrade = { id = id, stage = stage, ok = ok, msg = msg, at = os.time(), gave = (lastTrade and lastTrade.id == id) and lastTrade.gave or nil }   -- gave = how many pets this give-trade really offered
             print("[TSR] trade " .. stage .. ": " .. msg)
         end
 
@@ -12428,7 +12649,7 @@ local TradeAgent = (function()
                 local c = math.floor(tonumber(u.count) or 0)
                 if c >= 1 then unequip[#unequip + 1] = { name = tostring(u.name or ""), tier = tostring(u.tier or ""), count = c } end
             end
-            return { partner = partner, rules = rules, total = total, delay = delay, expect = tonumber(trade.expect) or total, unequip = unequip }
+            return { partner = partner, rules = rules, total = total, delay = delay, expect = tonumber(trade.expect) or total, unequip = unequip, flex = trade.flex == true }
         end
 
         -- The game sometimes leaves a FINISHED trade window on screen: empty, "0/20", "Choosing...". That is only visual,
@@ -12766,6 +12987,30 @@ local TradeAgent = (function()
             end)
             if next(petIndex) == nil then return setTrade(id, "failed", false, "no pets found in the pet data") end
 
+            -- v23 FLEX: the site asks for "up to N". Count what is really free right now (not locked, not equipped) and give that many,
+            -- like the Giveaway page does, instead of failing when the site's number was too high.
+            if t.flex and #t.rules == 1 then
+                if AUTO_UNLOCK then   -- a locked copy of the pet being moved is unlocked first (any rarity), so everything can go. Set AUTO_UNLOCK = false to keep your locks.
+                    setTrade(id, "scanning", true, "unlocking locked copies of this pet")
+                    pcall(DATA.unlock, function(nm, tr) return ruleMatches(t.rules[1], nm, tr) end, true)
+                end
+                local okF, groups = pcall(DATA.tradePets, nil, {})
+                if okF and type(groups) == "table" then
+                    local free, rule = 0, t.rules[1]
+                    for _, g in pairs(groups) do
+                        if ruleMatches(rule, g.name, g.tier) then free = free + #g.uids end
+                    end
+                    if free < 1 then
+                        return setTrade(id, "nofree", false, "no free " .. tostring(rule.tier) .. " " .. tostring(rule.name) .. " (locked or in use)")
+                    end
+                    if free < rule.count then
+                        dbg("flex give: asked for " .. rule.count .. ", only " .. free .. " free, giving " .. free)
+                        rule.count, t.total = free, free
+                    end
+                end
+                if lastTrade and lastTrade.id == id then lastTrade.gave = t.total end
+            end
+
             -- 1) send the trade request directly through the game's TradingService remote.
             -- No Trade menu, player-list row, or GUI button is required.
             if not tradeRequestRE then
@@ -12905,8 +13150,24 @@ local TradeAgent = (function()
                 cancelTrade()
                 return setTrade(id, "failed", false, "the other side is not " .. t.partner .. ", cancelled")
             end
-            setTrade(id, "checking", true, "waiting for " .. t.expect .. " pets in the offer")
-            if not waitFor(function() return themCount(build()) == t.expect or abortRequested end, 120) or abortRequested then
+            if t.flex then
+                -- v23 FLEX: the giver may offer fewer than the site asked for (some copies locked). Accept 1..expect once the offer stops changing.
+                setTrade(id, "checking", true, "waiting for the offer (up to " .. t.expect .. " pets)")
+                local seenN, since = 0, os.clock()
+                waitFor(function()
+                    if abortRequested or not buildOpen() then return true end
+                    local n = themCount(build())
+                    if n ~= seenN then seenN, since = n, os.clock() end
+                    return n >= 1 and os.clock() - since >= 2.5
+                end, 120)
+                if abortRequested then cancelTrade() return setTrade(id, "failed", false, "stopped by the site") end
+                if not buildOpen() then return setTrade(id, "failed", false, "the trade window closed before the offer arrived") end
+                if seenN < 1 or seenN > t.expect then
+                    cancelTrade()
+                    return setTrade(id, "failed", false, "offer shows " .. seenN .. " pets, expected 1-" .. t.expect .. ", cancelled")
+                end
+                t.expect = seenN
+            elseif not waitFor(function() return themCount(build()) == t.expect or abortRequested end, 120) or abortRequested then
                 cancelTrade()
                 if abortRequested then return setTrade(id, "failed", false, "stopped by the site") end
                 return setTrade(id, "failed", false, "offer never reached " .. t.expect .. " pets (it shows " .. themCount(build()) .. "), cancelled")
@@ -13174,6 +13435,7 @@ local TradeAgent = (function()
             local okA, act = pcall(currentActivity)
             pets.activity = okA and act or nil
 
+            if not siteAllowed(lp.Name) then return end   -- not on the site list: send nothing
             local ok, res = pcall(httpRequest, {
                 Url = WORKER_URL .. "/agent/heartbeat", Method = "POST",
                 Headers = { ["Content-Type"] = "application/json", ["x-key"] = AGENT_KEY },
@@ -16035,15 +16297,11 @@ local TAB_SCRIPTS = {
 	Events = Logic and { pages = {
 		{ name = "General", entries = (function()
 			local entries = { Logic.priority.duck, SkillPoints[1], DoubleJump, DesertChest }
-			if Logic.petdef then
-				entries[#entries + 1] = Logic.petdef.toggle
-				entries[#entries + 1] = Logic.petdef.mode
-				entries[#entries + 1] = Logic.petdef.info
-			end
 			if Logic.balloon then entries[#entries + 1] = Logic.balloon.toggle end
 			if Logic.dig then entries[#entries + 1] = Logic.dig.toggle end
 			return entries
 		end)() },
+		{ name = "Auto Pet Defense", entries = Logic.petdef and { Logic.petdef.toggle, Logic.petdef.mode, Logic.petdef.grab, Logic.petdef.info } or {} },
 		{ name = "Halloween", entries = Logic.halloween and {
 			Logic.halloween.treat, Logic.halloween.boss,
 			Logic.halloween.shop, Logic.halloween.items,
@@ -21205,10 +21463,10 @@ do
 		if klist then   -- last row of the Kaitun list: scrolls with the rows instead of floating over them
 			card = new("Frame", {
 				Name = "KaitunInfoCard", LayoutOrder = 1000, Size = UDim2.fromOffset(1066, 800),
-				BackgroundColor3 = C.card, BackgroundTransparency = CARD_T, BorderSizePixel = 0,
+				BackgroundColor3 = C.card, BackgroundTransparency = 0.35, BorderSizePixel = 0,
 			}, klist)
 		else
-			card = frame(page, 323, 395, 1080, 800, C.card, CARD_T)
+			card = frame(page, 323, 395, 1080, 800, C.card, 0.35)
 		end
 		corner(card, UDim.new(0, 14))
 		stroke(card, C.stroke, 1)
@@ -21234,13 +21492,24 @@ do
 			return kt and kt.second and kt.second._get and kt.second._get() or false
 		end
 		-- Builds one checklist row on the Home page.
-		local function item(group, key, x, cx, y, n, title, line1, line2)
-			label(card, n .. ".)", x, y + 14, 19, C.sub, Enum.Font.GothamMedium)
-			local titleLbl = label(card, title, x + 44, y + 4, 19, C.text, Enum.Font.GothamMedium)
-			label(card, line1, x + 44, y + 30, 16, C.sub, Enum.Font.Gotham)
-			label(card, line2, x + 44, y + 52, 16, C.sub, Enum.Font.Gotham)
+		-- centered = true: the whole block is centered on x (same look as the numbered lines above it) and the check sits at cx
+		local function item(group, key, x, cx, y, n, title, line1, line2, centered)
+			local titleLbl
+			if centered then
+				titleLbl = label(card, n .. ".)  " .. title, x, y + 12, 19, C.text, Enum.Font.GothamMedium, Enum.TextXAlignment.Center)
+				titleLbl.Size = UDim2.fromOffset(960, 27)
+				local l1 = label(card, line1, x, y + 36, 16, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
+				l1.Size = UDim2.fromOffset(960, 24)
+				local l2 = label(card, line2, x, y + 58, 16, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
+				l2.Size = UDim2.fromOffset(960, 24)
+			else
+				label(card, n .. ".)", x, y + 12, 19, C.sub, Enum.Font.GothamMedium)
+				titleLbl = label(card, title, x + 44, y + 12, 19, C.text, Enum.Font.GothamMedium)
+				label(card, line1, x + 44, y + 36, 16, C.sub, Enum.Font.Gotham)
+				label(card, line2, x + 44, y + 58, 16, C.sub, Enum.Font.Gotham)
+			end
 			local c = new("Frame", {
-				AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(cx, y + 14), Size = UDim2.fromOffset(26, 26),
+				AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(cx, y + 12), Size = UDim2.fromOffset(26, 26),
 				BackgroundColor3 = OFF_COLOR, BorderSizePixel = 0,
 			}, card)
 			corner(c, UDim.new(1, 0))
@@ -21264,7 +21533,7 @@ do
 			end)
 		end
 
-		label(card, "Tip: click a check to switch that part off (✕) - click it again to switch it back on.", 28, 432, 14, C.sub, Enum.Font.Gotham)
+		label(card, "Tip: click a check to switch that part off (✕) - click it again to switch it back on.", 28, 440, 14, C.sub, Enum.Font.Gotham)
 
 		-- left: Kaitun Hatch
 		label(card, "What Kaitun Hatch does", 28, 34, 24, C.text, Enum.Font.GothamMedium)
@@ -21290,8 +21559,21 @@ do
 		label(card, "Two Four-Leaf, two Secret Hunter, remaining Lucky III; one matching slot per pet.", 533, 592, 16, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
 		label(card, "2.)  The pets Richest equips before a rebirth", 533, 634, 19, C.text, Enum.Font.GothamMedium, Enum.TextXAlignment.Center)
 		label(card, "Renewal 3, once your equipped pets have their enchants.", 533, 660, 16, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
-		item(checksL, "rebirth", 283, 783, 700, 3, "Auto Rebirth (+ Auto Equip)", "Runs with Kaitun Hatch: the most expensive amount you can afford, only with enough coins.", "Auto Equip (Luckiest / Richest pets) needs Kaitun Stats.")
-		label(card, "If Kaitun Hatch is off, a pop up asks you to run it first and the toggle switches itself off again.", 533, 776, 14, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
+		item(checksL, "rebirth", 533, 340, 702, 3, "Auto Rebirth (+ Auto Equip)", "Runs with Kaitun Hatch: the most expensive amount you can afford, only with enough coins.", "Auto Equip (Luckiest / Richest pets) needs Kaitun Stats.", true)
+		label(card, "If Kaitun Hatch is off, a pop up asks you to run it first and the toggle switches itself off again.", 533, 784, 14, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
+
+		-- readability: the card sits over the animated background, so thin grey text got lost.
+		-- Heavier font, brighter grey and a soft dark outline for every text in this card.
+		;(function()
+			for _, d in ipairs(card:GetDescendants()) do
+				if d:IsA("TextLabel") and d.Text ~= "✓" and d.Text ~= "✕" then
+					if d.Font == Enum.Font.Gotham then d.Font = Enum.Font.GothamMedium end
+					if d.TextColor3 == C.sub then d.TextColor3 = Color3.fromRGB(205, 205, 205) end
+					d.TextStrokeColor3 = Color3.new(0, 0, 0)
+					d.TextStrokeTransparency = 0.55
+				end
+			end
+		end)()
 
 		task.spawn(function()
 			while alive and card.Parent do
@@ -22436,6 +22718,44 @@ local function openConfirmDialog(titleText, subText, onYes, unloading)
 	end)
 end
 Config.confirm = function(titleText, subText, onYes) openConfirmDialog(titleText, subText, onYes, false) end
+
+-- Small info card (same pop-in animation as the Unload dialog): a title on top and up to four "Name  value" lines in two columns.
+-- Click anywhere (or wait 8 s) to close it.
+local ringCardOpen = false
+Config.ringCard = function(title, stats)
+	if ringCardOpen or dialogOpen or not alive then return end
+	ringCardOpen = true
+	local backdrop = new("TextButton", {
+		Name = "RingCard", Size = UDim2.fromOffset(WINDOW_W, WINDOW_H), BackgroundColor3 = Color3.new(0, 0, 0),
+		BackgroundTransparency = 1, Text = "", AutoButtonColor = false, ZIndex = 80, Active = true,
+	}, window)
+	corner(backdrop, UDim.new(0, 28))
+	local dlg = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(WINDOW_W / 2, WINDOW_H / 2),
+		Size = UDim2.fromOffset(440, 190), BackgroundColor3 = C.card, BorderSizePixel = 0,
+	}, backdrop)
+	corner(dlg, UDim.new(0, 16))
+	stroke(dlg, Color3.fromRGB(57, 57, 57), 1)
+	local sc = new("UIScale", { Scale = 0.88 }, dlg)
+	label(dlg, tostring(title), 220, 44, 25, C.text, Enum.Font.GothamBold, Enum.TextXAlignment.Center).Size = UDim2.fromOffset(420, 36)
+	for i = 1, 4 do
+		local st = stats and stats[i]
+		local col, row = (i - 1) % 2, math.floor((i - 1) / 2)
+		local txt = st and string.format('%s  <font color="#FFFFFF"><b>%s</b></font>', tostring(st.name), tostring(st.value)) or "-"
+		label(dlg, txt, 115 + col * 210, 108 + row * 40, 18, C.sub, Enum.Font.Gotham, Enum.TextXAlignment.Center).Size = UDim2.fromOffset(200, 26)
+	end
+	tw(backdrop, { BackgroundTransparency = 0.45 }, 0.2, Enum.EasingStyle.Quad)
+	tw(sc, { Scale = 1 }, 0.3, Enum.EasingStyle.Back)
+	local function close()
+		if not ringCardOpen then return end
+		ringCardOpen = false
+		tw(backdrop, { BackgroundTransparency = 1 }, 0.12, Enum.EasingStyle.Quad)
+		tw(sc, { Scale = 0.88 }, 0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		task.delay(0.13, function() backdrop:Destroy() end)
+	end
+	backdrop.MouseButton1Click:Connect(close)
+	task.delay(8, close)
+end
 -- Opens the "Do you want to Unload the Script?" dialog.
 local function openUnloadDialog()
 	openConfirmDialog("Do you want to Unload the Script?", "This stops everything it was doing and closes the UI.", function()
